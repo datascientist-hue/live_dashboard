@@ -1,4 +1,4 @@
 ﻿streamlit
 pandas
-ftplib
 plotly
+ftplib
