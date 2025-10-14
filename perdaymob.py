@@ -7,16 +7,18 @@ from ftplib import FTP
 import io
 import os
 from zoneinfo import ZoneInfo
-import streamlit_authenticator as stauth # LOGIN SYSTEM-KAAGA
+import streamlit_authenticator as stauth
+import json # PUTHUSA IMPORT PANROM (JSON-kaaga)
 
 # --- App Configuration & Title ---
 st.set_page_config(layout="wide", page_title="Sales Performance Dashboard")
 st.title("Sales Performance Dashboard 📊")
 
-# --- STEP 1: LOGIN SYSTEM SETUP ---
 
-# Function to load user details securely from your FTP server
-@st.cache_data(ttl=300) # Cache user details for 5 minutes
+# --- STEP 1: LOGIN SYSTEM SETUP (JSON VERSION) ---
+
+# Function to load user details from your JSON file on FTP
+@st.cache_data(ttl=300)
 def load_credentials_from_ftp():
     try:
         creds = st.secrets["ftp"]
@@ -24,24 +26,15 @@ def load_credentials_from_ftp():
         ftp.login(user=creds['user'], passwd=creds['password'])
         
         in_memory_file = io.BytesIO()
-        # Make sure 'credentials_path' is set in your Streamlit secrets
+        # Make sure 'credentials_path' points to your .json file in Streamlit secrets
         ftp.retrbinary(f"RETR {creds['credentials_path']}", in_memory_file.write)
         in_memory_file.seek(0)
         ftp.quit()
         
-        df_creds = pd.read_csv(in_memory_file)
-        
-        # Convert the CSV data into the format required by the authenticator
-        credentials = {
-            "usernames": {
-                row['username']: {
-                    "name": row['name'],
-                    "password": row['password']
-                }
-                for index, row in df_creds.iterrows()
-            }
-        }
+        # JSON file-a direct-a load panrom
+        credentials = json.load(in_memory_file)
         return credentials
+        
     except Exception as e:
         st.error(f"Error loading login credentials: {e}")
         return None
@@ -52,7 +45,7 @@ credentials = load_credentials_from_ftp()
 # Cookie configuration for session management
 cookie_config = {
     'name': "sales_dashboard_cookie",
-    'key': "a_secret_key_for_cookie_signature", # You can change this key to anything
+    'key': "a_secret_key_for_cookie_signature", # Idha neenga edhavadhu random text-a maathikalam
     'expiry_days': 30
 }
 
@@ -68,22 +61,23 @@ if credentials:
     with st.sidebar:
         name, authentication_status, username = authenticator.login('Login', 'main')
 else:
-    # If credentials cannot be loaded, stop the app
+    # Credentials load aagalana, app-a stop panniduvom
     st.error("Login system could not be initialized. Please contact the administrator.")
     st.stop()
 
+
 # --- STEP 2: CHECK LOGIN STATUS ---
-# The rest of your app will only run if authentication_status is True (successful login)
+# Login successful aana mattum thaan, keela irukura dashboard code velai seiyum
 
 if st.session_state["authentication_status"]:
     
-    # Add a logout button to the sidebar after login
+    # Login aanathuku aprom, sidebar-la logout button kaatuvom
     with st.sidebar:
         st.write(f'Welcome *{name}*')
         authenticator.logout('Logout', 'main')
 
-    # --- UNGA EXISTING CODE INGA IRUNDHU START AAGUDHU ---
-    # (Endha maatharamum seiyapadavillai)
+    # --- UNGA ORIGINAL DASHBOARD CODE INGA IRUNDHU START AAGUDHU ---
+    # (Idhula endha maatharamum seiyapadavillai)
 
     # --- DATA LOADING AND CLEANING ---
     @st.cache_data(ttl=300)
@@ -186,8 +180,6 @@ if st.session_state["authentication_status"]:
             st.stop()
 
         # --- ADVANCED SIDEBAR ---
-        # Note: The sidebar is now used for both login and filters.
-        # We add a title for the filter section.
         st.sidebar.title("Filters")
 
         # --- DATE RANGE FILTER ---
