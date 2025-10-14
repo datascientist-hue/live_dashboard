@@ -22,10 +22,8 @@ def save_credentials_to_ftp(credentials):
         creds = st.secrets["ftp"]
         ftp = FTP(creds['host'])
         ftp.login(user=creds['user'], passwd=creds['password'])
-        
         json_data = json.dumps(credentials, indent=2)
         in_memory_file = io.BytesIO(json_data.encode('utf-8'))
-        
         ftp.storbinary(f"STOR {creds['credentials_path']}", in_memory_file)
         ftp.quit()
         return True
@@ -51,7 +49,7 @@ def load_credentials_from_ftp():
         return None
 
 @st.cache_data(ttl=300)
-def load_main_data_from_ftp(_ftp_creds):
+def load_data_from_ftp(_ftp_creds):
     """Unga original data loading function."""
     modification_time_str = None
     try:
@@ -78,7 +76,7 @@ def load_main_data_from_ftp(_ftp_creds):
         
         df_primary = pd.read_csv(primary_file_obj, encoding='latin1', low_memory=False)
         df_ctg = pd.read_csv(ctg_file_obj, encoding='latin1', low_memory=False)
-
+        
         primary_cols = set(df_primary.columns)
         ctg_cols = set(df_ctg.columns)
         common_columns = list(primary_cols.intersection(ctg_cols))
@@ -87,7 +85,7 @@ def load_main_data_from_ftp(_ftp_creds):
             return None, modification_time_str
             
         df = pd.merge(df_primary, df_ctg, on=common_columns[0], how='left')
-
+        
         if 'Inv Date' not in df.columns:
             st.error("Data Error: 'Inv Date' column not found.")
             return None, modification_time_str
@@ -124,15 +122,16 @@ def user_management_ui(credentials, df):
                 new_password = st.text_input("Password", type="password")
                 new_role = st.selectbox("Role", ["ADMIN", "RGM", "DSM", "SO"], key="add_role")
             with col3:
+                st.write("**Filter Value**")
                 new_filter_value = None
                 if df is not None:
-                    if new_role == "RGM": new_filter_value = st.selectbox("Select RGM Name", options=sorted(df['RGM'].unique()), key="add_rgm")
-                    elif new_role == "DSM": new_filter_value = st.selectbox("Select DSM Name", options=sorted(df['DSM'].unique()), key="add_dsm")
-                    elif new_role == "SO": new_filter_value = st.selectbox("Select SO Name", options=sorted(df['SO'].unique()), key="add_so")
-                    else: st.write("No filter needed for ADMIN.")
-                else: st.warning("Data file not loaded, cannot show filter options.")
+                    if new_role == "RGM": new_filter_value = st.selectbox("Select RGM Name", options=sorted(df['RGM'].unique()), key="add_rgm", label_visibility="collapsed")
+                    elif new_role == "DSM": new_filter_value = st.selectbox("Select DSM Name", options=sorted(df['DSM'].unique()), key="add_dsm", label_visibility="collapsed")
+                    elif new_role == "SO": new_filter_value = st.selectbox("Select SO Name", options=sorted(df['SO'].unique()), key="add_so", label_visibility="collapsed")
+                    else: st.text_input("Filter Value", "N/A for ADMIN", disabled=True)
+                else: st.warning("Data not loaded, cannot show filter options.")
             if st.form_submit_button("Add User"):
-                if not all([new_username, new_name, new_password, new_role]): st.error("Please fill all fields for the new user.")
+                if not all([new_username, new_name, new_password, new_role]): st.error("Please fill all fields.")
                 elif new_username in credentials["usernames"]: st.error(f"Username '{new_username}' already exists.")
                 else:
                     credentials["usernames"][new_username] = {"name": new_name, "password": hash_password(new_password), "role": new_role, "filter_value": new_filter_value}
@@ -156,24 +155,25 @@ def user_management_ui(credentials, df):
                     current_role_index = role_options.index(user_data["role"]) if user_data["role"] in role_options else 0
                     edited_role = st.selectbox("Role", role_options, index=current_role_index, key="edit_role")
                 with col3:
+                    st.write("**Filter Value**")
                     edited_filter_value = user_data.get("filter_value")
                     if df is not None:
                         if edited_role == "RGM":
                             rgm_options = sorted(df['RGM'].unique())
                             current_filter_index = rgm_options.index(edited_filter_value) if edited_filter_value in rgm_options else 0
-                            edited_filter_value = st.selectbox("Select RGM Name", options=rgm_options, index=current_filter_index, key="edit_rgm")
+                            edited_filter_value = st.selectbox("Select RGM Name", options=rgm_options, index=current_filter_index, key="edit_rgm", label_visibility="collapsed")
                         elif edited_role == "DSM":
                             dsm_options = sorted(df['DSM'].unique())
                             current_filter_index = dsm_options.index(edited_filter_value) if edited_filter_value in dsm_options else 0
-                            edited_filter_value = st.selectbox("Select DSM Name", options=dsm_options, index=current_filter_index, key="edit_dsm")
+                            edited_filter_value = st.selectbox("Select DSM Name", options=dsm_options, index=current_filter_index, key="edit_dsm", label_visibility="collapsed")
                         elif edited_role == "SO":
                             so_options = sorted(df['SO'].unique())
                             current_filter_index = so_options.index(edited_filter_value) if edited_filter_value in so_options else 0
-                            edited_filter_value = st.selectbox("Select SO Name", options=so_options, index=current_filter_index, key="edit_so")
+                            edited_filter_value = st.selectbox("Select SO Name", options=so_options, index=current_filter_index, key="edit_so", label_visibility="collapsed")
                         else:
                             edited_filter_value = None
-                            st.write("No filter needed.")
-                    else: st.warning("Data file not loaded.")
+                            st.text_input("Filter Value", "N/A for ADMIN", disabled=True, key="edit_filter_na")
+                    else: st.warning("Data not loaded.")
                 if st.form_submit_button("Save Changes"):
                     credentials["usernames"][user_to_edit].update({"name": edited_name, "role": edited_role, "filter_value": edited_filter_value})
                     if edited_password: credentials["usernames"][user_to_edit]["password"] = hash_password(edited_password)
@@ -208,11 +208,14 @@ def main_dashboard_ui(df, mod_time, user_role, user_filter_value):
         st.warning(f"No data available for your access level.")
         return
         
+    # --- IDHU UNGA ORIGINAL SIDEBAR FILTERS ---
     st.sidebar.title("Filters")
     min_date, max_date = df['Inv Date'].min().date(), df['Inv Date'].max().date()
     start_date, end_date = st.sidebar.date_input("Select a Date Range", value=(max_date, max_date), min_value=min_date, max_value=max_date)
     
     df_hierarchical_filtered = df.copy()
+    
+    # Role-based hierarchy filters
     if user_role in ["SUPER_ADMIN", "ADMIN"]:
         if selected_rgm := st.sidebar.multiselect("Filter by RGM", sorted(df_hierarchical_filtered['RGM'].unique())): df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['RGM'].isin(selected_rgm)]
     if user_role in ["SUPER_ADMIN", "ADMIN", "RGM"]:
@@ -220,14 +223,16 @@ def main_dashboard_ui(df, mod_time, user_role, user_filter_value):
     if user_role in ["SUPER_ADMIN", "ADMIN", "RGM", "DSM"]:
         if selected_asm := st.sidebar.multiselect("Filter by ASM", sorted(df_hierarchical_filtered['ASM'].unique())): df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['ASM'].isin(selected_asm)]
         if selected_cc := st.sidebar.multiselect("Filter by CustomerClass", sorted(df_hierarchical_filtered['CustomerClass'].unique())): df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['CustomerClass'].isin(selected_cc)]
-    if selected_so := st.sidebar.multiselect("Filter by SO", sorted(df_hierarchical_filtered['SO'].unique())): df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['SO'].isin(selected_so)]
     
+    if selected_so := st.sidebar.multiselect("Filter by SO", sorted(df_hierarchical_filtered['SO'].unique())): 
+        df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['SO'].isin(selected_so)]
+
     df_filtered = df_hierarchical_filtered[(df_hierarchical_filtered['Inv Date'].dt.date >= start_date) & (df_hierarchical_filtered['Inv Date'].dt.date <= end_date)].copy()
     if df_filtered.empty:
         st.warning("No sales data for the selected filters.")
         return
         
-    # --- IDHU THAAN UNGA FULL DASHBOARD UI ---
+    # --- IDHU UNGA FULL DASHBOARD UI ---
     st.markdown("---")
     st.header(f"Snapshot for {start_date.strftime('%d-%b-%Y')} to {end_date.strftime('%d-%b-%Y')}")
     summary_total_net_Volume = df_filtered['Qty in Ltrs/Kgs'].sum() / 1000
