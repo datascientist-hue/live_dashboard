@@ -8,7 +8,7 @@ import io
 import os
 from zoneinfo import ZoneInfo
 import streamlit_authenticator as stauth
-import json # PUTHUSA IMPORT PANROM (JSON-kaaga)
+import json # JSON file-a padikka thevai
 
 # --- App Configuration & Title ---
 st.set_page_config(layout="wide", page_title="Sales Performance Dashboard")
@@ -57,9 +57,13 @@ if credentials:
         cookie_config['key'],
         cookie_config['expiry_days'],
     )
-    # Render the login form in the sidebar
+    
+    # --- LATEST CORRECT SYNTAX ---
+    # Login form-a sidebar-la create panrom.
+    # login() function kulla vera endha argument-um thevai illa.
     with st.sidebar:
-        name, authentication_status, username = authenticator.login('Login', 'main')
+        authenticator.login()
+
 else:
     # Credentials load aagalana, app-a stop panniduvom
     st.error("Login system could not be initialized. Please contact the administrator.")
@@ -69,9 +73,10 @@ else:
 # --- STEP 2: CHECK LOGIN STATUS ---
 # Login successful aana mattum thaan, keela irukura dashboard code velai seiyum
 
-if st.session_state["authentication_status"]:
+if st.session_state.get("authentication_status"):
     
-    # Login aanathuku aprom, sidebar-la logout button kaatuvom
+    # Login aanathuku aprom, name-a session_state-la irundhu eduthu, logout button kaatuvom
+    name = st.session_state.get("name", "")
     with st.sidebar:
         st.write(f'Welcome *{name}*')
         authenticator.logout('Logout', 'main')
@@ -82,9 +87,6 @@ if st.session_state["authentication_status"]:
     # --- DATA LOADING AND CLEANING ---
     @st.cache_data(ttl=300)
     def load_data_from_ftp(_ftp_creds):
-        """
-        Securely loads data and fetches the modification time of the primary file from an FTP server.
-        """
         modification_time_str = None
         try:
             def download_file_from_ftp(ftp, full_path):
@@ -346,9 +348,9 @@ if st.session_state["authentication_status"]:
         st.info("Data could not be loaded or processed. Please check the error messages above for details.")
 
 # --- STEP 3: HANDLE LOGIN ERRORS ---
-elif st.session_state["authentication_status"] is False:
+elif st.session_state.get("authentication_status") is False:
     with st.sidebar:
         st.error('Username/password is incorrect')
-elif st.session_state["authentication_status"] is None:
+elif st.session_state.get("authentication_status") is None:
     with st.sidebar:
         st.warning('Please enter your username and password to access the dashboard.')
