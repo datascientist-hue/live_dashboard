@@ -8,8 +8,28 @@ from datetime import datetime, timedelta
 # --- 1. FILE PATHS & INITIAL SETUP ---
 st.set_page_config(layout="wide", page_title="Sales Dashboard")
 
-# FTP-la irundhu data edupadharkana path
-PRIMARY_CSV_URL = "ftp://u363812745.vvd.in@82.112.232.31/public_html/VVD_Hic/data_storage/primary.csv"
+# Streamlit secrets-லிருந்து FTP விவரங்களைப் பாதுகாப்பாகப் பெறுகிறோம்
+try:
+    FTP_USERNAME = st.secrets["ftp_credentials"]["username"]
+    FTP_PASSWORD = st.secrets["ftp_credentials"]["password"]
+    FTP_HOST = st.secrets["ftp_credentials"]["host"]
+    FTP_PATH = "/public_html/VVD_Hic/data_storage/primary.csv"
+
+    # சரியான FTP URL-ஐ உருவாக்குகிறோம்
+    PRIMARY_CSV_URL = f"ftp://{FTP_USERNAME}:{FTP_PASSWORD}@{FTP_HOST}{FTP_PATH}"
+
+except KeyError:
+    st.error("FTP credentials not found in secrets. Please create a `.streamlit/secrets.toml` file.")
+    st.info("""
+    Example `.streamlit/secrets.toml` file structure:
+    ```toml
+    [ftp_credentials]
+    username = "your_ftp_username"
+    password = "your_ftp_password"
+    host = "your_ftp_host"
+    ```
+    """)
+    st.stop() # Credentials இல்லை என்றால், app-ஐ நிறுத்திவிடும்
 
 # credentials.json file-ku local path (app run aagura folder-laye thedum)
 CREDENTIALS_JSON_PATH = "credentials.json"
@@ -58,7 +78,7 @@ def load_main_data(file_url):
     try:
         # URL-ilirundhu data-vai padikirom
         df = pd.read_csv(file_url, encoding='latin1', low_memory=False)
-        
+
         # Unga original data cleaning steps
         if 'Inv Date' not in df.columns:
             st.error("Data Error: The column 'Inv Date' was not found.")
@@ -96,7 +116,7 @@ def user_management_ui(credentials, df):
     with st.expander("➕ Add New User", expanded=False):
         with st.form("add_user_form", clear_on_submit=True):
             st.write("Fill details to create a new user.")
-            
+
             col1, col2, col3 = st.columns(3)
             with col1:
                 new_username = st.text_input("Username (no spaces, e.g., rgm_chennai)").lower()
@@ -133,10 +153,10 @@ def user_management_ui(credentials, df):
 
     # --- 2. EDIT EXISTING USER SECTION ---
     with st.expander("✏️ Edit Existing User", expanded=True):
-        
+
         # Dropdown to select which user to edit
         user_to_edit = st.selectbox(
-            "Select User to Edit", 
+            "Select User to Edit",
             options=[u for u in credentials["usernames"].keys() if u != "superadmin"],
             index=None, # Default-a edhuvum select aagirukadhu
             placeholder="Choose a user..."
@@ -144,10 +164,10 @@ def user_management_ui(credentials, df):
 
         if user_to_edit:
             user_data = credentials["usernames"][user_to_edit]
-            
+
             with st.form("edit_user_form"):
                 st.write(f"Now editing user: **{user_to_edit}**")
-                
+
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     # Username-a kaatrom, aana maatha mudiyadhu
@@ -155,12 +175,12 @@ def user_management_ui(credentials, df):
                     edited_name = st.text_input("Full Name", value=user_data["name"])
                 with col2:
                     edited_password = st.text_input("New Password (leave blank to keep unchanged)", type="password")
-                    
+
                     # Role-a select panna, palaya role default-a select aagirukum
                     role_options = ["ADMIN", "RGM", "DSM", "SO"]
                     current_role_index = role_options.index(user_data["role"]) if user_data["role"] in role_options else 0
                     edited_role = st.selectbox("Role", role_options, index=current_role_index, key="edit_role")
-                
+
                 with col3:
                     edited_filter_value = user_data.get("filter_value")
                     if edited_role == "RGM":
@@ -184,11 +204,11 @@ def user_management_ui(credentials, df):
                     credentials["usernames"][user_to_edit]["name"] = edited_name
                     credentials["usernames"][user_to_edit]["role"] = edited_role
                     credentials["usernames"][user_to_edit]["filter_value"] = edited_filter_value
-                    
+
                     # Password field-la edhavadhu type panna mattum, password-a update pannum
                     if edited_password:
                         credentials["usernames"][user_to_edit]["password"] = hash_password(edited_password)
-                    
+
                     save_credentials(credentials)
                     st.success(f"User '{user_to_edit}' updated successfully!")
                     st.rerun()
@@ -212,7 +232,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     if user_role == "RGM": df = df[df['RGM'] == user_filter_value].copy()
     elif user_role == "DSM": df = df[df['DSM'] == user_filter_value].copy()
     elif user_role == "SO": df = df[df['SO'] == user_filter_value].copy()
-    
+
     if df.empty:
         st.warning(f"No data available for your access level ('{user_filter_value}'). Please check the 'Filter Value' in User Management.")
         return
@@ -221,27 +241,27 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     st.sidebar.title("Filters")
     min_date, max_date = df['Inv Date'].min().date(), df['Inv Date'].max().date()
     start_date, end_date = st.sidebar.date_input("Select a Date Range", value=(max_date, max_date), min_value=min_date, max_value=max_date)
-    
+
     df_hierarchical_filtered = df.copy()
 
     if user_role in ["SUPER_ADMIN", "ADMIN"]:
-        if selected_rgm := st.sidebar.multiselect("Filter by RGM", sorted(df_hierarchical_filtered['RGM'].unique())): 
+        if selected_rgm := st.sidebar.multiselect("Filter by RGM", sorted(df_hierarchical_filtered['RGM'].unique())):
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['RGM'].isin(selected_rgm)]
     if user_role in ["SUPER_ADMIN", "ADMIN", "RGM"]:
-        if selected_dsm := st.sidebar.multiselect("Filter by DSM", sorted(df_hierarchical_filtered['DSM'].unique())): 
+        if selected_dsm := st.sidebar.multiselect("Filter by DSM", sorted(df_hierarchical_filtered['DSM'].unique())):
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['DSM'].isin(selected_dsm)]
     if user_role in ["SUPER_ADMIN", "ADMIN", "RGM", "DSM"]:
-        if selected_asm := st.sidebar.multiselect("Filter by ASM", sorted(df_hierarchical_filtered['ASM'].unique())): 
+        if selected_asm := st.sidebar.multiselect("Filter by ASM", sorted(df_hierarchical_filtered['ASM'].unique())):
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['ASM'].isin(selected_asm)]
-        if selected_cc := st.sidebar.multiselect("Filter by CustomerClass", sorted(df_hierarchical_filtered['CustomerClass'].unique())): 
+        if selected_cc := st.sidebar.multiselect("Filter by CustomerClass", sorted(df_hierarchical_filtered['CustomerClass'].unique())):
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['CustomerClass'].isin(selected_cc)]
-    
-    if selected_so := st.sidebar.multiselect("Filter by SO", sorted(df_hierarchical_filtered['SO'].unique())): 
+
+    if selected_so := st.sidebar.multiselect("Filter by SO", sorted(df_hierarchical_filtered['SO'].unique())):
         df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['SO'].isin(selected_so)]
 
     # --- FINAL FILTERED DATAFRAME ---
     df_filtered = df_hierarchical_filtered[(df_hierarchical_filtered['Inv Date'].dt.date >= start_date) & (df_hierarchical_filtered['Inv Date'].dt.date <= end_date)].copy()
-    
+
     if df_filtered.empty:
         st.warning("No sales data available for the selected filters.")
         return
@@ -306,7 +326,7 @@ if not st.session_state['authentication_status']:
         login_username = st.text_input("Username").lower()
         login_password = st.text_input("Password", type="password")
         if st.button("Login"):
-            if login_username in credentials["usernames"]:
+            if credentials and login_username in credentials.get("usernames", {}):
                 stored_hash = credentials["usernames"][login_username]["password"].encode()
                 if bcrypt.checkpw(login_password.encode(), stored_hash):
                     st.session_state['authentication_status'] = True
@@ -323,7 +343,7 @@ else:
     user_role = user_details.get("role")
     user_filter_value = user_details.get("filter_value")
     name = user_details.get("name")
-    
+
     with st.sidebar:
         st.success(f"Welcome *{name}* ({user_role})")
         if st.button("Logout"):
@@ -332,7 +352,7 @@ else:
 
     # FTP URL-il irundhu data-vai load seigirom
     df_main = load_main_data(PRIMARY_CSV_URL)
-    
+
     if df_main is not None:
         if user_role == "SUPER_ADMIN":
             page = st.sidebar.radio("Navigation", ["Dashboard", "User Management"])
@@ -343,4 +363,4 @@ else:
         else:
             main_dashboard_ui(df_main, user_role, user_filter_value)
     else:
-        st.error("Could not load dashboard data.")
+        st.error("Could not load dashboard data. Check FTP connection and file path.")
