@@ -8,32 +8,58 @@ import io
 import os
 from zoneinfo import ZoneInfo
 import streamlit_authenticator as stauth
-import json # JSON file-a padikka thevai
+import json
 
 # --- App Configuration & Title ---
 st.set_page_config(layout="wide", page_title="Sales Performance Dashboard")
 st.title("Sales Performance Dashboard 📊")
 
 
+# ===== START OF SUPER DEBUG CODE =====
+# Intha section, Render-la irunthu secrets varutha ilayanu confirm pannum.
+st.header("🕵️‍♂️ Environment Variable Inspector")
+st.write("Checking all environment variables available to this app...")
+
+# ST_SECRETS nu aarambikira variables mattum thedurom
+streamlit_secrets_from_env = {key: "********" for key, value in os.environ.items() if key.startswith("ST_SECRETS")}
+
+if streamlit_secrets_from_env:
+    st.success("SUCCESS: Found these variables starting with 'ST_SECRETS':")
+    st.json(streamlit_secrets_from_env)
+    st.write("If you see your keys above, the variables are set correctly in Render! The problem might be the cache.")
+else:
+    st.error("CRITICAL ERROR: No environment variables starting with 'ST_SECRETS' were found.")
+    st.write("This confirms that the app is not receiving the secrets from Render. Please go back to Render's Environment tab and double-check the KEY names for typos, especially `_` vs `__`.")
+
+st.write("---")
+# ===== END OF SUPER DEBUG CODE =====
+
+
 # --- STEP 1: LOGIN SYSTEM SETUP (JSON VERSION) ---
 
 # Function to load user details from your JSON file on FTP
-@st.cache_data(ttl=300)
+# @st.cache_data(ttl=300)  # <-- DEBUG PANRATHUKAGA ITHA TEMPORARY-AH COMMENT PANROM
 def load_credentials_from_ftp():
     try:
+        # Muthalla secrets kedaikutha nu check panrom
         creds = st.secrets["ftp"]
+        
+        # Apparam FTP connection try panrom
         ftp = FTP(creds['host'])
         ftp.login(user=creds['user'], passwd=creds['password'])
         
         in_memory_file = io.BytesIO()
-        # Make sure 'credentials_path' points to your .json file in Streamlit secrets
         ftp.retrbinary(f"RETR {creds['credentials_path']}", in_memory_file.write)
         in_memory_file.seek(0)
         ftp.quit()
         
-        # JSON file-a direct-a load panrom
         credentials = json.load(in_memory_file)
         return credentials
+
+    except KeyError:
+        st.error("Error loading login credentials: The 'ftp' section was not found in secrets.")
+        st.info("This usually means the Environment Variables in Render are not named correctly. They must follow the format `ST_SECRETS__FTP__YOUR_KEY` with double underscores.")
+        return None
         
     except Exception as e:
         st.error(f"Error loading login credentials: {e}")
@@ -45,7 +71,7 @@ credentials = load_credentials_from_ftp()
 # Cookie configuration for session management
 cookie_config = {
     'name': "sales_dashboard_cookie",
-    'key': "a_secret_key_for_cookie_signature", # Idha neenga edhavadhu random text-a maathikalam
+    'key': "a_secret_key_for_cookie_signature", 
     'expiry_days': 30
 }
 
@@ -58,34 +84,24 @@ if credentials:
         cookie_config['expiry_days'],
     )
     
-    # --- LATEST CORRECT SYNTAX ---
-    # Login form-a sidebar-la create panrom.
-    # login() function kulla vera endha argument-um thevai illa.
     with st.sidebar:
         authenticator.login()
 
 else:
-    # Credentials load aagalana, app-a stop panniduvom
-    st.error("Login system could not be initialized. Please contact the administrator.")
+    st.error("Login system could not be initialized. Please check the error messages above.")
     st.stop()
 
 
 # --- STEP 2: CHECK LOGIN STATUS ---
-# Login successful aana mattum thaan, keela irukura dashboard code velai seiyum
-
 if st.session_state.get("authentication_status"):
     
-    # Login aanathuku aprom, name-a session_state-la irundhu eduthu, logout button kaatuvom
     name = st.session_state.get("name", "")
     with st.sidebar:
         st.write(f'Welcome *{name}*')
         authenticator.logout('Logout', 'main')
 
-    # --- UNGA ORIGINAL DASHBOARD CODE INGA IRUNDHU START AAGUDHU ---
-    # (Idhula endha maatharamum seiyapadavillai)
-
     # --- DATA LOADING AND CLEANING ---
-    @st.cache_data(ttl=300)
+    # @st.cache_data(ttl=300) # <-- DEBUG PANRATHUKAGA ITHAYUM TEMPORARY-AH COMMENT PANROM
     def load_data_from_ftp(_ftp_creds):
         modification_time_str = None
         try:
@@ -132,11 +148,6 @@ if st.session_state.get("authentication_status"):
                 return None, modification_time_str
 
             df['Inv Date'] = pd.to_datetime(df['Inv Date'], format='%d-%b-%y', errors='coerce')
-
-            if df['Inv Date'].isnull().all() and len(df) > 0:
-                st.error("CRITICAL DATA ERROR: All rows have an invalid date format.")
-                return None, modification_time_str
-
             df.dropna(subset=['Inv Date'], inplace=True)
 
             numeric_cols = ['Qty in Ltrs/Kgs', 'Net Value']
@@ -168,186 +179,96 @@ if st.session_state.get("authentication_status"):
             ist_time = utc_time.astimezone(ZoneInfo("Asia/Kolkata"))
             formatted_time = ist_time.strftime("%d %b %Y, %I:%M:%S %p IST")
             st.caption(f"Data Last Refreshed: {formatted_time}")
-            
         except Exception:
-            st.caption("Could not determine the exact data refresh time.")
+            pass # Ignore if time parsing fails
     else:
         st.caption(f"Dashboard Loaded: {datetime.now().strftime('%d %b %Y, %I:%M:%S %p')}")
 
     # --- MAIN DASHBOARD LOGIC ---
     if df is not None:
-
         if df.empty:
             st.warning("No valid sales data was found after the cleaning process.")
             st.stop()
 
-        # --- ADVANCED SIDEBAR ---
+        # Sidebar and filters...
         st.sidebar.title("Filters")
-
-        # --- DATE RANGE FILTER ---
         st.sidebar.header("Date Range Selection")
-
-        min_date = df['Inv Date'].min().date()
-        max_date = df['Inv Date'].max().date()
-
-        selected_date_range = st.sidebar.date_input(
-            "Select a Date Range",
-            value=(max_date, max_date),
-            min_value=min_date,
-            max_value=max_date,
-        )
-
+        min_date, max_date = df['Inv Date'].min().date(), df['Inv Date'].max().date()
+        selected_date_range = st.sidebar.date_input("Select a Date Range", value=(max_date, max_date), min_value=min_date, max_value=max_date)
+        
         if len(selected_date_range) != 2:
-            st.sidebar.warning("Please select a valid start and end date.")
             st.stop()
-
         start_date, end_date = selected_date_range
 
-        # --- HIERARCHICAL FILTERS ---
+        # Hierarchical filters...
         df_hierarchical_filtered = df.copy()
-
-        if 'RGM' in df.columns:
-            rgm_options = sorted(df['RGM'].unique())
-            selected_rgm = st.sidebar.multiselect("Filter by RGM", rgm_options)
-            if selected_rgm:
-                df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['RGM'].isin(selected_rgm)]
-
-        if 'DSM' in df.columns:
-            dsm_options = sorted(df_hierarchical_filtered['DSM'].unique())
-            selected_dsm = st.sidebar.multiselect("Filter by DSM", dsm_options)
-            if selected_dsm:
-                df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['DSM'].isin(selected_dsm)]
-
-        if 'ASM' in df.columns:
-            asm_options = sorted(df_hierarchical_filtered['ASM'].unique())
-            selected_asm = st.sidebar.multiselect("Filter by ASM", asm_options)
-            if selected_asm:
-                df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['ASM'].isin(selected_asm)]
-
-        if 'CustomerClass' in df.columns:
-            CustomerClass_option = sorted(df_hierarchical_filtered['CustomerClass'].unique())
-            selected_CustomerClass = st.sidebar.multiselect("Filter by CustomerClass", CustomerClass_option)
-            if selected_CustomerClass:
-                df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['CustomerClass'].isin(selected_CustomerClass)]
-
-        if 'SO' in df.columns:
-            SO_option = sorted(df_hierarchical_filtered['SO'].unique())
-            selected_SO = st.sidebar.multiselect("Filter by SO", SO_option)
-            if selected_SO:
-                df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['SO'].isin(selected_SO)]
-
-        df_filtered = df_hierarchical_filtered[
-            (df_hierarchical_filtered['Inv Date'].dt.date >= start_date) &
-            (df_hierarchical_filtered['Inv Date'].dt.date <= end_date)
-        ].copy()
-
+        for col in ['RGM', 'DSM', 'ASM', 'CustomerClass', 'SO']:
+            if col in df.columns:
+                options = sorted(df_hierarchical_filtered[col].unique())
+                selected = st.sidebar.multiselect(f"Filter by {col}", options)
+                if selected:
+                    df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered[col].isin(selected)]
+        
+        df_filtered = df_hierarchical_filtered[(df_hierarchical_filtered['Inv Date'].dt.date >= start_date) & (df_hierarchical_filtered['Inv Date'].dt.date <= end_date)].copy()
+        
         st.markdown("---")
-
         if df_filtered.empty:
             st.warning("No sales data available for the combination of selected filters.")
             st.stop()
 
-        # --- TOP ROW SUMMARY KPI CARDS ---
+        # KPIs and Charts...
         st.header(f"Snapshot for {start_date.strftime('%d-%b-%Y')} to {end_date.strftime('%d-%b-%Y')}")
-
-        summary_total_net_Volume = df_filtered['Qty in Ltrs/Kgs'].sum() / 1000
+        
         summary_total_net_value = df_filtered['Net Value'].sum()
         summary_unique_invoices = df_filtered['Inv Num'].nunique()
         summary_unique_dbs = df_filtered['Cust Name'].nunique()
         Unique_prod_ctg = df_filtered['Prod Ctg'].nunique()
+        summary_total_net_Volume = df_filtered['Qty in Ltrs/Kgs'].sum() / 1000
         
         col1, col2, col3 = st.columns(3)
         col1.metric(label="Unique Prod Ctg", value=f"{Unique_prod_ctg}")
         col2.metric(label="Total Net Value", value=f"₹ {summary_total_net_value:,.0f}")
         col3.metric(label="Invoices Billed", value=f"{summary_unique_invoices}")
-
+        
         col4, col5 = st.columns(2)
         col4.metric(label="Distributors Billed", value=f"{summary_unique_dbs}")
-        col5.metric(label="Total Volume", value=f"{summary_total_net_Volume:,.2f}MT")
+        col5.metric(label="Total Volume", value=f"{summary_total_net_Volume:,.2f} MT")
 
         st.markdown("---")
-
-        # --- Daily Volume Trend Analysis ---
         st.header("Volume Comparison")
-
         single_kpi_date = end_date
-
-        df_today = df_hierarchical_filtered[df_hierarchical_filtered['Inv Date'].dt.date == single_kpi_date]
-        todays_volume = df_today['Qty in Ltrs/Kgs'].sum() / 1000
-
+        todays_volume = df_hierarchical_filtered[df_hierarchical_filtered['Inv Date'].dt.date == single_kpi_date]['Qty in Ltrs/Kgs'].sum() / 1000
         previous_day = single_kpi_date - timedelta(days=1)
-        df_previous_day = df_hierarchical_filtered[df_hierarchical_filtered['Inv Date'].dt.date == previous_day]
-        yesterdays_volume = df_previous_day['Qty in Ltrs/Kgs'].sum() / 1000
-
+        yesterdays_volume = df_hierarchical_filtered[df_hierarchical_filtered['Inv Date'].dt.date == previous_day]['Qty in Ltrs/Kgs'].sum() / 1000
         seven_day_start_date = single_kpi_date - timedelta(days=6)
-        df_last_7_days = df_hierarchical_filtered[
-            (df_hierarchical_filtered['Inv Date'].dt.date >= seven_day_start_date) &
-            (df_hierarchical_filtered['Inv Date'].dt.date <= single_kpi_date)
-        ]
-        past_7_days_volume = df_last_7_days['Qty in Ltrs/Kgs'].sum() / 1000
-
+        past_7_days_volume = df_hierarchical_filtered[(df_hierarchical_filtered['Inv Date'].dt.date >= seven_day_start_date) & (df_hierarchical_filtered['Inv Date'].dt.date <= single_kpi_date)]['Qty in Ltrs/Kgs'].sum() / 1000
+        
         kpi1, kpi2, kpi3 = st.columns(3)
+        kpi1.metric(label=f"End Date Volume ({single_kpi_date.strftime('%d-%b')})", value=f"{todays_volume:.2f} T")
+        kpi2.metric(label=f"Previous Day Volume ({previous_day.strftime('%d-%b')})", value=f"{yesterdays_volume:.2f} T")
+        kpi3.metric(label="Past 7 Days Volume", value=f"{past_7_days_volume:.2f} T", help=f"Total volume from {seven_day_start_date.strftime('%d-%b')} to {single_kpi_date.strftime('%d-%b')}")
 
-        with kpi1:
-            st.metric(
-                label=f"End Date Volume ({single_kpi_date.strftime('%d-%b')})",
-                value=f"{todays_volume:.2f} T"
-            )
-
-        with kpi2:
-            st.metric(
-                label=f"Previous Day Volume ({previous_day.strftime('%d-%b')})",
-                value=f"{yesterdays_volume:.2f} T"
-            )
-
-        with kpi3:
-            st.metric(
-                label="Past 7 Days Volume",
-                value=f"{past_7_days_volume:.2f} T",
-                help=f"Total volume from {seven_day_start_date.strftime('%d-%b')} to {single_kpi_date.strftime('%d-%b')}"
-            )
         st.markdown("---")
-
-        # --- DYNAMIC PERFORMANCE TABLE ---
         st.header("Detailed Performance View")
-
-        view_selection = st.radio(
-            label="Choose a view for the table below:",
-            options=['Product Wise', 'Distributor Wise'],
-            horizontal=True,
-        )
-
+        view_selection = st.radio("Choose a view:", ['Product Wise', 'Distributor Wise'], horizontal=True)
+        
         if view_selection == 'Product Wise':
             st.subheader("Performance by Product Category")
-            prod_ctg_performance = df_filtered.groupby('Prod Ctg').agg(
-                Total_Value=('Net Value', 'sum'),
-                Total_Tonnes=('Qty in Ltrs/Kgs', lambda x: x.sum() / 1000),
-                Distributors_Billed=('Cust Name', 'nunique')
-            ).reset_index().sort_values('Total_Value', ascending=False)
-
+            prod_ctg_performance = df_filtered.groupby('Prod Ctg').agg(Total_Value=('Net Value', 'sum'), Total_Tonnes=('Qty in Ltrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('Cust Name', 'nunique')).reset_index().sort_values('Total_Value', ascending=False)
             prod_ctg_performance['Total_Value'] = prod_ctg_performance['Total_Value'].map('₹ {:,.0f}'.format)
             prod_ctg_performance['Total_Tonnes'] = prod_ctg_performance['Total_Tonnes'].map('{:.2f} T'.format)
-
             st.dataframe(prod_ctg_performance, use_container_width=True)
 
         elif view_selection == 'Distributor Wise':
             st.subheader("Performance by Distributor")
-            db_performance = df_filtered.groupby(['Cust Name', 'City']).agg(
-                Total_Value=('Net Value', 'sum'),
-                Total_Tonnes=('Qty in Ltrs/Kgs', lambda x: x.sum() / 1000),
-                Unique_Products_Purchased_ct=('Prod Ctg', 'nunique'),
-                Unique_Products_Purchased=('Prod Ctg','unique')
-            ).reset_index().sort_values('Total_Value', ascending=False)
-
+            db_performance = df_filtered.groupby(['Cust Name', 'City']).agg(Total_Value=('Net Value', 'sum'), Total_Tonnes=('Qty in Ltrs/Kgs', lambda x: x.sum() / 1000), Unique_Products_Purchased_ct=('Prod Ctg', 'nunique'), Unique_Products_Purchased=('Prod Ctg','unique')).reset_index().sort_values('Total_Value', ascending=False)
             db_performance['Total_Value'] = db_performance['Total_Value'].map('₹ {:,.0f}'.format)
             db_performance['Total_Tonnes'] = db_performance['Total_Tonnes'].map('{:.2f} T'.format)
-
             st.dataframe(db_performance, use_container_width=True)
 
     else:
         st.info("Data could not be loaded or processed. Please check the error messages above for details.")
 
-# --- STEP 3: HANDLE LOGIN ERRORS ---
 elif st.session_state.get("authentication_status") is False:
     with st.sidebar:
         st.error('Username/password is incorrect')
