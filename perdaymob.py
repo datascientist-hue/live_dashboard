@@ -153,13 +153,15 @@ def user_management_ui(credentials, df):
                 new_name = st.text_input("Full Name")
             with col2:
                 new_password = st.text_input("Password", type="password")
-                new_role = st.selectbox("Role", ["ADMIN", "RGM", "DSM", "SO"], key="add_role")
+                new_role = st.selectbox("Role", ["ADMIN", "RGM", "DSM", "ASM", "SO"], key="add_role")
             with col3:
                 new_filter_value = None
                 if new_role == "RGM":
                     new_filter_value = st.selectbox("Select RGM Name", options=sorted(df['RGM'].unique()), key="add_rgm")
                 elif new_role == "DSM":
                     new_filter_value = st.selectbox("Select DSM Name", options=sorted(df['DSM'].unique()), key="add_dsm")
+                elif new_role == "ASM":
+                    new_filter_value = st.selectbox("Select ASM Name", options=sorted(df['ASM'].unique()), key="add_Asm")
                 elif new_role == "SO":
                     new_filter_value = st.selectbox("Select SO Name", options=sorted(df['SO'].unique()), key="add_so")
                 else:
@@ -199,7 +201,7 @@ def user_management_ui(credentials, df):
                     edited_name = st.text_input("Full Name", value=user_data["name"])
                 with col2:
                     edited_password = st.text_input("New Password (leave blank to keep unchanged)", type="password")
-                    role_options = ["ADMIN", "RGM", "DSM", "SO"]
+                    role_options = ["ADMIN", "RGM", "DSM", "ASM" ,"SO"]
                     current_role_index = role_options.index(user_data["role"]) if user_data["role"] in role_options else 0
                     edited_role = st.selectbox("Role", role_options, index=current_role_index, key="edit_role")
                 with col3:
@@ -212,6 +214,10 @@ def user_management_ui(credentials, df):
                         dsm_options = sorted(df['DSM'].unique())
                         current_filter_index = dsm_options.index(edited_filter_value) if edited_filter_value in dsm_options else 0
                         edited_filter_value = st.selectbox("Select DSM Name", options=dsm_options, index=current_filter_index, key="edit_dsm")
+                    elif edited_role == "ASM":
+                        dsm_options = sorted(df['ASM'].unique())
+                        current_filter_index = asm_options.index(edited_filter_value) if edited_filter_value in asm_options else 0
+                        edited_filter_value = st.selectbox("Select ASM Name", options=dsm_options, index=current_filter_index, key="edit_asm")
                     elif edited_role == "SO":
                         so_options = sorted(df['SO'].unique())
                         current_filter_index = so_options.index(edited_filter_value) if edited_filter_value in so_options else 0
@@ -247,6 +253,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
 
     if user_role == "RGM": df = df[df['RGM'] == user_filter_value].copy()
     elif user_role == "DSM": df = df[df['DSM'] == user_filter_value].copy()
+    elif user_role == "ASM": df = df[df['ASM'] == user_filter_value].copy()
     elif user_role == "SO": df = df[df['SO'] == user_filter_value].copy()
     
     if df.empty:
@@ -265,7 +272,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     if user_role in ["SUPER_ADMIN", "ADMIN", "RGM"]:
         if selected_dsm := st.sidebar.multiselect("Filter by DSM", sorted(df_hierarchical_filtered['DSM'].unique())): 
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['DSM'].isin(selected_dsm)]
-    if user_role in ["SUPER_ADMIN", "ADMIN", "RGM", "DSM"]:
+    if user_role in ["SUPER_ADMIN", "ADMIN", "RGM", "DSM", "ASM"]:
         if selected_asm := st.sidebar.multiselect("Filter by ASM", sorted(df_hierarchical_filtered['ASM'].unique())): 
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['ASM'].isin(selected_asm)]
         if selected_cc := st.sidebar.multiselect("Filter by CustomerClass", sorted(df_hierarchical_filtered['CustomerClass'].unique())): 
