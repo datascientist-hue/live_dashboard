@@ -9,6 +9,7 @@ import ftplib
 from ftplib import FTP  # Required to connect to the FTP server
 import io  # Required to handle files in memory
 from zoneinfo import ZoneInfo # Required for timezone conversion
+import time
 
 # --- 1. APP CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Sales Dashboard")
@@ -242,9 +243,22 @@ def user_management_ui(credentials, df):
                         current_filter_index = dsm_options.index(edited_filter_value) if edited_filter_value in dsm_options else 0
                         edited_filter_value = st.selectbox("Select DSM Name", options=dsm_options, index=current_filter_index, key="edit_dsm")
                     elif edited_role == "ASM":
-                        asm_options = sorted(df['ASM'].unique()) 
-                        current_filter_index = asm_options.index(edited_filter_value) if edited_filter_value in asm_options else 0
-                        edited_filter_value = st.selectbox("Select ASM Name", options=asm_options, index=current_filter_index, key="edit_asm")
+                        asm_options = sorted(df['ASM'].unique())
+                        current_selection = user_data.get("filter_value")
+                        default_selection = []
+                        if isinstance(current_selection, list):
+                            # If it's already a list, use it.
+                            default_selection = [asm for asm in current_selection if asm in asm_options]
+                        elif current_selection in asm_options:
+                             # If it's a single item, put it in a list.
+                             default_selection = [current_selection]
+                        edited_filter_value = st.multiselect(
+                            "Select ASM Name(s)", 
+                            options=asm_options, 
+                            default=default_selection, 
+                            key="edit_asm"
+                        )
+                        
                     elif edited_role == "SO":
                         so_options = sorted(df['SO'].unique())
                         current_filter_index = so_options.index(edited_filter_value) if edited_filter_value in so_options else 0
@@ -411,8 +425,12 @@ else:
         if st.button("Logout"):
             st.session_state.clear()
             st.rerun()
-
+    # --- Loading Time-a Kanakida Pudhiya Code ---
+    start_timer = time.time()  # Timer-a start pannu
     df_main, mod_time, error_message, status_message = load_main_data_from_ftp()
+    end_timer = time.time()    # Timer-a stop pannu
+    loading_time = end_timer - start_timer # Motha nerathai kanakidu
+    # --- End of New Code ---
     
     if error_message:
         st.error(error_message)
