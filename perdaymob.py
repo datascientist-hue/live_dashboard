@@ -90,16 +90,16 @@ def initialize_credentials_if_needed():
             st.stop()
 
 
-# --- 3. FTP-BASED DATA LOADING FUNCTION (MODIFIED TO FIX CACHE ERROR) ---
+# --- 3. FTP-BASED DATA LOADING FUNCTION (WITH ADVANCED FILTERING) ---
 @st.cache_data(ttl=300)
 def load_main_data_from_ftp():
     """
     Loads and cleans the primary.csv file from the FTP server.
-    MODIFIED: Now returns status information instead of calling st.error() or st.toast() directly.
-    Returns a tuple: (DataFrame, mod_time, error_message, is_filtered_flag)
+    MODIFIED: Now filters for the CURRENT YEAR and THEN the last 6 JC Periods for maximum speed.
+    Returns a tuple: (DataFrame, mod_time, error_message, status_message)
     """
     modification_time_str = None
-    is_filtered = False # NEW: Flag to indicate if the JC Period filter was applied
+    status_msg = None # NEW: Variable to hold the status/toast message
     try:
         ftp_creds = st.secrets["ftp"]
         ftp = FTP(ftp_creds['host'])
@@ -118,19 +118,41 @@ def load_main_data_from_ftp():
 
         df = pd.read_csv(in_memory_file, encoding='latin1', low_memory=False)
         
-        if 'JCPeriod' in df.columns:
-            all_jcs = sorted(df['JCPeriod'].dropna().unique())
-            if len(all_jcs) > 6:
-                last_6_jcs = all_jcs[-6:]
-                df = df[df['JCPeriod'].isin(last_6_jcs)].copy()
-                is_filtered = True # MODIFIED: Set the flag instead of calling st.toast
-        
+        # --- Data Cleaning and Type Conversion (moved before filtering for safety) ---
         if 'Inv Date' not in df.columns:
-            # MODIFIED: Return an error message instead of calling st.error
-            return None, None, "Data Error: The column 'Inv Date' was not found.", False
+            return None, None, "Data Error: The column 'Inv Date' was not found.", None
         
         df['Inv Date'] = pd.to_datetime(df['Inv Date'], format='%d-%b-%y', errors='coerce')
         df.dropna(subset=['Inv Date'], inplace=True)
+
+        # ======================================================================================
+        # --- NEW ADVANCED OPTIMIZATION BLOCK TO MAKE THE DASHBOARD MUCH FASTER ---
+        
+        # Step 1: Filter the DataFrame to include only data from the current year.
+        current_year = datetime.now().year
+        df_current_year = df[df['Inv Date'].dt.year == current_year].copy()
+
+        # Step 2: From the current year's data, filter for the last 6 JC Periods.
+        if 'JCPeriod' in df_current_year.columns and not df_current_year.empty:
+            all_jcs_current_year = sorted(df_current_year['JCPeriod'].dropna().unique())
+            
+            if len(all_jcs_current_year) > 6:
+                last_6_jcs = all_jcs_current_year[-6:]
+                df_final_filtered = df_current_year[df_current_year['JCPeriod'].isin(last_6_jcs)].copy()
+                status_msg = f"Showing data for the last 6 JC Periods of {current_year} for faster performance."
+            else:
+                # If there are 6 or fewer JCs, use all of them for the current year
+                df_final_filtered = df_current_year.copy()
+                status_msg = f"Showing all available data for the current year ({current_year})."
+        else:
+            # If no JCPeriod column or no data for current year, just use the year-filtered data
+            df_final_filtered = df_current_year.copy()
+
+        # The final DataFrame to be used by the app is the filtered one
+        df = df_final_filtered
+        # --- END OF ADVANCED OPTIMIZATION BLOCK ---
+        # ======================================================================================
+
         numeric_cols = ['Qty in Ltrs/Kgs', 'Net Value']
         for col in numeric_cols:
             if col in df.columns:
@@ -140,17 +162,14 @@ def load_main_data_from_ftp():
             if col in df.columns:
                 df[col].fillna('Unknown', inplace=True)
         
-        # MODIFIED: Return success status (None for error message) and the filter flag
-        return df, modification_time_str, None, is_filtered
+        return df, modification_time_str, None, status_msg
 
     except ftplib.all_errors as e:
-        # MODIFIED: Return an error message
         error_msg = f"FTP Error: Could not find the data file. Please check the path. Details: {e}"
-        return None, None, error_msg, False
+        return None, None, error_msg, None
     except Exception as e:
-        # MODIFIED: Return a generic error message
         error_msg = f"Error loading main data: {e}"
-        return None, None, error_msg, False
+        return None, None, error_msg, None
 
 # --- 4. UI FUNCTIONS (No changes here) ---
 
@@ -267,7 +286,6 @@ def user_management_ui(credentials, df):
 
 def main_dashboard_ui(df, user_role, user_filter_value):
     """This is the main dashboard UI that is visible to everyone."""
-    # The title and caption are now handled in the main part of the app after login
     
     if user_role == "RGM": df = df[df['RGM'] == user_filter_value].copy()
     elif user_role == "DSM": df = df[df['DSM'] == user_filter_value].copy()
@@ -275,7 +293,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     elif user_role == "SO": df = df[df['SO'] == user_filter_value].copy()
     
     if df.empty:
-        st.warning(f"No data available for your access level ('{user_filter_value}'). Please check the 'Filter Value' in User Management.")
+        st.warning(f"No data available for the current year or your access level ('{user_filter_value}').")
         return
 
     st.sidebar.title("Filters")
@@ -405,20 +423,18 @@ else:
             st.session_state.clear()
             st.rerun()
 
-    # --- NEW LOGIC TO HANDLE THE RETURN VALUES FROM THE CACHED FUNCTION ---
-    # MODIFIED: Unpack four values now
-    df_main, mod_time, error_message, is_filtered = load_main_data_from_ftp()
+    # Unpack the four values returned from the data loading function
+    df_main, mod_time, error_message, status_message = load_main_data_from_ftp()
     
-    # NEW: Check for an error message first
+    # Check for an error message first and stop if one exists
     if error_message:
         st.error(error_message)
         st.stop()
 
-    # NEW: Show the toast message here, outside the cached function
-    if is_filtered:
-        st.toast(f"Showing data for the last 6 JC Periods for faster performance.", icon="⚡")
-    # --- END OF NEW LOGIC ---
-
+    # Show the status toast message here, outside the cached function
+    if status_message:
+        st.toast(status_message, icon="⚡")
+    
     st.title("Sales Performance Dashboard 📊")
     if mod_time:
         try:
@@ -441,5 +457,4 @@ else:
         else:
             main_dashboard_ui(df_main, user_role, user_filter_value)
     else:
-        # This part will now be triggered by the error message check above, but is kept for safety
         st.error("Could not load dashboard data.")
