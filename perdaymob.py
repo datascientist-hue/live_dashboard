@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import ftplib
 from ftplib import FTP  # Required to connect to the FTP server
 import io  # Required to handle files in memory
-from zoneinfo import ZoneInfo # NEW IMPORT: Required for timezone conversion
+from zoneinfo import ZoneInfo # Required for timezone conversion
 
 # --- 1. APP CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Sales Dashboard")
@@ -23,16 +23,14 @@ def load_credentials_from_ftp():
         ftp = FTP(creds['host'])
         ftp.login(user=creds['user'], passwd=creds['password'])
         
-        # Download the file into memory
         in_memory_file = io.BytesIO()
         ftp.retrbinary(f"RETR {creds['credentials_path']}", in_memory_file.write)
-        in_memory_file.seek(0)  # Go to the beginning of the buffer
+        in_memory_file.seek(0)
         ftp.quit()
         
         return json.load(in_memory_file)
         
     except ftplib.error_perm:
-        # This will happen if the file does not exist. This is not an error, but part of the initial setup.
         return None
     except Exception as e:
         st.error(f"FTP Error: Could not load login credentials: {e}")
@@ -45,11 +43,9 @@ def save_credentials_to_ftp(credentials):
         ftp = FTP(creds['host'])
         ftp.login(user=creds['user'], passwd=creds['password'])
         
-        # Write the JSON data to a memory buffer
         json_data = json.dumps(credentials, indent=4)
         in_memory_file = io.BytesIO(json_data.encode('utf-8'))
         
-        # Upload the file from memory to the FTP server
         ftp.storbinary(f"STOR {creds['credentials_path']}", in_memory_file)
         ftp.quit()
         return True
@@ -70,7 +66,6 @@ def initialize_credentials_if_needed():
         st.warning("`credentials.json` not found on FTP. A new file is being created with a Super Admin.")
         
         try:
-            # Get the secure password from secrets
             initial_admin_pass = st.secrets["initial_admin"]["password"]
         except (KeyError, AttributeError):
             st.error("FATAL ERROR: `initial_admin` password is not configured in Streamlit secrets. The app cannot start.")
@@ -80,7 +75,7 @@ def initialize_credentials_if_needed():
             "usernames": {
                 "superadmin": {
                     "name": "Super Admin",
-                    "password": hash_password(initial_admin_pass), # Secure hashed password from secrets
+                    "password": hash_password(initial_admin_pass),
                     "role": "SUPER_ADMIN",
                     "filter_value": None
                 }
@@ -95,28 +90,27 @@ def initialize_credentials_if_needed():
             st.stop()
 
 
-# --- 3. FTP-BASED DATA LOADING FUNCTION ---
-@st.cache_data(ttl=300) # Cache the data for 5 minutes
+# --- 3. FTP-BASED DATA LOADING FUNCTION (MODIFIED TO FIX CACHE ERROR) ---
+@st.cache_data(ttl=300)
 def load_main_data_from_ftp():
-    """Loads and cleans the primary.csv file from the FTP server."""
-    modification_time_str = None # NEW: Initialize variable to hold the timestamp
+    """
+    Loads and cleans the primary.csv file from the FTP server.
+    MODIFIED: Now returns status information instead of calling st.error() or st.toast() directly.
+    Returns a tuple: (DataFrame, mod_time, error_message, is_filtered_flag)
+    """
+    modification_time_str = None
+    is_filtered = False # NEW: Flag to indicate if the JC Period filter was applied
     try:
         ftp_creds = st.secrets["ftp"]
         ftp = FTP(ftp_creds['host'])
         ftp.login(user=ftp_creds['user'], passwd=ftp_creds['password'])
 
-        # --- NEW BLOCK TO GET FILE MODIFICATION TIME ---
         try:
-            # Ask the FTP server for the modification time of the primary file
             mdtm_response = ftp.sendcmd(f"MDTM {ftp_creds['primary_path']}")
-            # The response is like "213 YYYYMMDDHHMMSS", we need the second part
             modification_time_str = mdtm_response.split(' ')[1]
         except ftplib.all_errors:
-            # If the server doesn't support this command, we just continue without the timestamp
             pass
-        # --- END OF NEW BLOCK ---
 
-        # Download the primary.csv file into memory
         in_memory_file = io.BytesIO()
         ftp.retrbinary(f"RETR {ftp_creds['primary_path']}", in_memory_file.write)
         in_memory_file.seek(0)
@@ -129,11 +123,12 @@ def load_main_data_from_ftp():
             if len(all_jcs) > 6:
                 last_6_jcs = all_jcs[-6:]
                 df = df[df['JCPeriod'].isin(last_6_jcs)].copy()
-                st.toast(f"Showing data for the last 6 JC Periods for faster performance.", icon="⚡")
+                is_filtered = True # MODIFIED: Set the flag instead of calling st.toast
         
         if 'Inv Date' not in df.columns:
-            st.error("Data Error: The column 'Inv Date' was not found.")
-            return None, None # MODIFIED: Return two values
+            # MODIFIED: Return an error message instead of calling st.error
+            return None, None, "Data Error: The column 'Inv Date' was not found.", False
+        
         df['Inv Date'] = pd.to_datetime(df['Inv Date'], format='%d-%b-%y', errors='coerce')
         df.dropna(subset=['Inv Date'], inplace=True)
         numeric_cols = ['Qty in Ltrs/Kgs', 'Net Value']
@@ -145,14 +140,17 @@ def load_main_data_from_ftp():
             if col in df.columns:
                 df[col].fillna('Unknown', inplace=True)
         
-        return df, modification_time_str # MODIFIED: Return the DataFrame and the timestamp
+        # MODIFIED: Return success status (None for error message) and the filter flag
+        return df, modification_time_str, None, is_filtered
 
     except ftplib.all_errors as e:
-        st.error(f"FTP Error: Could not find the data file. Please check the path. Details: {e}")
-        return None, None # MODIFIED: Return two values
+        # MODIFIED: Return an error message
+        error_msg = f"FTP Error: Could not find the data file. Please check the path. Details: {e}"
+        return None, None, error_msg, False
     except Exception as e:
-        st.error(f"Error loading main data: {e}")
-        return None, None # MODIFIED: Return two values
+        # MODIFIED: Return a generic error message
+        error_msg = f"Error loading main data: {e}"
+        return None, None, error_msg, False
 
 # --- 4. UI FUNCTIONS (No changes here) ---
 
@@ -270,8 +268,7 @@ def user_management_ui(credentials, df):
 def main_dashboard_ui(df, user_role, user_filter_value):
     """This is the main dashboard UI that is visible to everyone."""
     # The title and caption are now handled in the main part of the app after login
-    # This keeps the UI consistent
-
+    
     if user_role == "RGM": df = df[df['RGM'] == user_filter_value].copy()
     elif user_role == "DSM": df = df[df['DSM'] == user_filter_value].copy()
     elif user_role == "ASM": df = df[df['ASM'] == user_filter_value].copy()
@@ -357,27 +354,22 @@ def main_dashboard_ui(df, user_role, user_filter_value):
 
 # --- 5. AUTHENTICATION & PAGE ROUTING (MODIFIED FOR FTP) ---
 
-# Before starting, check if secrets are configured
 if "ftp" not in st.secrets:
     st.error("FTP credentials are not configured in Streamlit secrets. The app cannot start.")
     st.stop()
 
-# First, initialize/check the credentials file
 initialize_credentials_if_needed()
 credentials = load_credentials_from_ftp()
 
-# If credentials could not be loaded, stop the app
 if not credentials:
     st.error("Could not load credentials from FTP. App setup is incomplete.")
     st.stop()
 
-# Initialize session state
 if 'authentication_status' not in st.session_state:
     st.session_state['authentication_status'] = None
 if 'username' not in st.session_state:
     st.session_state['username'] = None
 
-# Show the login form to non-authenticated users
 if not st.session_state['authentication_status']:
     st.title("Sales Performance Dashboard 📊")
     st.info("Please login to access the dashboard.")
@@ -400,7 +392,6 @@ if not st.session_state['authentication_status']:
             if st.session_state['authentication_status'] is False:
                 st.error("Username/password is incorrect.")
     
-# Show the dashboard to authenticated users
 else:
     username = st.session_state['username']
     user_details = credentials["usernames"].get(username, {})
@@ -414,27 +405,31 @@ else:
             st.session_state.clear()
             st.rerun()
 
-    # Load the main data after a successful login
-    df_main, mod_time = load_main_data_from_ftp()
+    # --- NEW LOGIC TO HANDLE THE RETURN VALUES FROM THE CACHED FUNCTION ---
+    # MODIFIED: Unpack four values now
+    df_main, mod_time, error_message, is_filtered = load_main_data_from_ftp()
     
-    # --- NEW BLOCK TO DISPLAY THE TITLE AND REFRESH TIME ---
+    # NEW: Check for an error message first
+    if error_message:
+        st.error(error_message)
+        st.stop()
+
+    # NEW: Show the toast message here, outside the cached function
+    if is_filtered:
+        st.toast(f"Showing data for the last 6 JC Periods for faster performance.", icon="⚡")
+    # --- END OF NEW LOGIC ---
+
     st.title("Sales Performance Dashboard 📊")
     if mod_time:
         try:
-            # Parse the UTC time string from the FTP server (Format: YYYYMMDDHHMMSS)
             utc_time = datetime.strptime(mod_time, '%Y%m%d%H%M%S').replace(tzinfo=ZoneInfo("UTC"))
-            # Convert the time to Indian Standard Time (IST)
             ist_time = utc_time.astimezone(ZoneInfo("Asia/Kolkata"))
-            # Format the time for display
             formatted_time = ist_time.strftime("%d %b %Y, %I:%M:%S %p IST")
             st.caption(f"Data Last Refreshed: {formatted_time}")
         except Exception:
-            # If there's an error in parsing, fall back to the old method
             st.caption(f"Dashboard Loaded: {datetime.now().strftime('%d %b %Y, %I:%M:%S %p')}")
     else:
-        # If the modification time couldn't be fetched, use the old method
         st.caption(f"Dashboard Loaded: {datetime.now().strftime('%d %b %Y, %I:%M:%S %p')}")
-    # --- END OF NEW DISPLAY BLOCK ---
 
     if df_main is not None:
         if user_role == "SUPER_ADMIN":
@@ -446,4 +441,5 @@ else:
         else:
             main_dashboard_ui(df_main, user_role, user_filter_value)
     else:
+        # This part will now be triggered by the error message check above, but is kept for safety
         st.error("Could not load dashboard data.")
