@@ -90,16 +90,16 @@ def initialize_credentials_if_needed():
             st.stop()
 
 
-# --- 3. FTP-BASED DATA LOADING FUNCTION (WITH ADVANCED FILTERING) ---
+# --- 3. FTP-BASED DATA LOADING FUNCTION (WITH LAST 45 DAYS FILTER) ---
 @st.cache_data(ttl=300)
 def load_main_data_from_ftp():
     """
     Loads and cleans the primary.csv file from the FTP server.
-    MODIFIED: Now filters for the CURRENT YEAR and THEN the last 6 JC Periods for maximum speed.
+    MODIFIED: Now filters for the LAST 45 DAYS for maximum speed.
     Returns a tuple: (DataFrame, mod_time, error_message, status_message)
     """
     modification_time_str = None
-    status_msg = None # NEW: Variable to hold the status/toast message
+    status_msg = None
     try:
         ftp_creds = st.secrets["ftp"]
         ftp = FTP(ftp_creds['host'])
@@ -118,7 +118,6 @@ def load_main_data_from_ftp():
 
         df = pd.read_csv(in_memory_file, encoding='latin1', low_memory=False)
         
-        # --- Data Cleaning and Type Conversion (moved before filtering for safety) ---
         if 'Inv Date' not in df.columns:
             return None, None, "Data Error: The column 'Inv Date' was not found.", None
         
@@ -126,31 +125,21 @@ def load_main_data_from_ftp():
         df.dropna(subset=['Inv Date'], inplace=True)
 
         # ======================================================================================
-        # --- NEW ADVANCED OPTIMIZATION BLOCK TO MAKE THE DASHBOARD MUCH FASTER ---
+        # --- NEW OPTIMIZATION BLOCK: FILTER FOR LAST 45 DAYS ---
         
-        # Step 1: Filter the DataFrame to include only data from the current year.
-        current_year = datetime.now().year
-        df_current_year = df[df['Inv Date'].dt.year == current_year].copy()
+        # 1. Define the date range: today and 45 days ago.
+        # We convert to datetime objects to ensure a correct comparison.
+        today = pd.to_datetime(datetime.now().date())
+        start_date_filter = today - timedelta(days=45)
 
-        # Step 2: From the current year's data, filter for the last 6 JC Periods.
-        if 'JCPeriod' in df_current_year.columns and not df_current_year.empty:
-            all_jcs_current_year = sorted(df_current_year['JCPeriod'].dropna().unique())
-            
-            if len(all_jcs_current_year) > 6:
-                last_6_jcs = all_jcs_current_year[-6:]
-                df_final_filtered = df_current_year[df_current_year['JCPeriod'].isin(last_6_jcs)].copy()
-                status_msg = f"Showing data for the last 6 JC Periods of {current_year} for faster performance."
-            else:
-                # If there are 6 or fewer JCs, use all of them for the current year
-                df_final_filtered = df_current_year.copy()
-                status_msg = f"Showing all available data for the current year ({current_year})."
-        else:
-            # If no JCPeriod column or no data for current year, just use the year-filtered data
-            df_final_filtered = df_current_year.copy()
+        # 2. Filter the DataFrame to keep only rows within the last 45 days.
+        # This is the core of the performance improvement.
+        df = df[df['Inv Date'] >= start_date_filter].copy()
+        
+        # 3. Set a status message to inform the user.
+        status_msg = "Showing data from the last 45 days for faster performance."
 
-        # The final DataFrame to be used by the app is the filtered one
-        df = df_final_filtered
-        # --- END OF ADVANCED OPTIMIZATION BLOCK ---
+        # --- END OF OPTIMIZATION BLOCK ---
         # ======================================================================================
 
         numeric_cols = ['Qty in Ltrs/Kgs', 'Net Value']
@@ -293,7 +282,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     elif user_role == "SO": df = df[df['SO'] == user_filter_value].copy()
     
     if df.empty:
-        st.warning(f"No data available for the current year or your access level ('{user_filter_value}').")
+        st.warning(f"No data available in the last 45 days for your access level ('{user_filter_value}').")
         return
 
     st.sidebar.title("Filters")
@@ -423,15 +412,12 @@ else:
             st.session_state.clear()
             st.rerun()
 
-    # Unpack the four values returned from the data loading function
     df_main, mod_time, error_message, status_message = load_main_data_from_ftp()
     
-    # Check for an error message first and stop if one exists
     if error_message:
         st.error(error_message)
         st.stop()
 
-    # Show the status toast message here, outside the cached function
     if status_message:
         st.toast(status_message, icon="⚡")
     
