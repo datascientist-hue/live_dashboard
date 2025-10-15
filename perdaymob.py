@@ -3,11 +3,11 @@ import streamlit as st
 import pandas as pd
 import json
 import os
-import bcrypt  # Password hash panna thevai
+import bcrypt  # Required for password hashing
 from datetime import datetime, timedelta
 import ftplib
-from ftplib import FTP  # FTP server-udan inaiya thevai
-import io  # Memory-il file-kalai kaiyala thevai
+from ftplib import FTP  # Required to connect to the FTP server
+import io  # Required to handle files in memory
 
 # --- 1. APP CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Sales Dashboard")
@@ -16,70 +16,70 @@ st.set_page_config(layout="wide", page_title="Sales Dashboard")
 # --- 2. FTP-BASED HELPER FUNCTIONS FOR USER MANAGEMENT ---
 
 def load_credentials_from_ftp():
-    """credentials.json file-la irundhu user data-va FTP-la irundhu load pannum."""
+    """Loads user data from the credentials.json file on the FTP server."""
     try:
         creds = st.secrets["ftp"]
         ftp = FTP(creds['host'])
         ftp.login(user=creds['user'], passwd=creds['password'])
         
-        # File-a memory-la download seiyavum
+        # Download the file into memory
         in_memory_file = io.BytesIO()
         ftp.retrbinary(f"RETR {creds['credentials_path']}", in_memory_file.write)
-        in_memory_file.seek(0)  # Buffer-in aarambathirku sellavum
+        in_memory_file.seek(0)  # Go to the beginning of the buffer
         ftp.quit()
         
         return json.load(in_memory_file)
         
     except ftplib.error_perm:
-        # File illai endral, idhu varum. Idhu oru thavaru alla, mudhal murai setup seiyum podhu nigazhum.
+        # This will happen if the file does not exist. This is not an error, but part of the initial setup.
         return None
     except Exception as e:
-        st.error(f"FTP Error: Login credentials-a load panna mudiyavillai: {e}")
+        st.error(f"FTP Error: Could not load login credentials: {e}")
         return None
 
 def save_credentials_to_ftp(credentials):
-    """Pudhu user data-va credentials.json file-la FTP-la save pannum."""
+    """Saves new user data to the credentials.json file on the FTP server."""
     try:
         creds = st.secrets["ftp"]
         ftp = FTP(creds['host'])
         ftp.login(user=creds['user'], passwd=creds['password'])
         
-        # JSON data-va memory buffer-il ezhudhavum
+        # Write the JSON data to a memory buffer
         json_data = json.dumps(credentials, indent=4)
         in_memory_file = io.BytesIO(json_data.encode('utf-8'))
         
-        # Memory-il irundhu FTP-ku file-a upload seiyavum
+        # Upload the file from memory to the FTP server
         ftp.storbinary(f"STOR {creds['credentials_path']}", in_memory_file)
         ftp.quit()
         return True
     except Exception as e:
-        st.error(f"FTP Error: Credentials-a save panna mudiyavillai: {e}")
+        st.error(f"FTP Error: Could not save credentials: {e}")
         return False
 
 def hash_password(password):
-    """bcrypt use panni password-a secure hash-a maathum."""
+    """Hashes the password using bcrypt to make it secure."""
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 def initialize_credentials_if_needed():
     """
-    FTP-la credentials.json file illana, Streamlit secrets-la irundhu
-    default superadmin user-oda onna create pannum.
+    If credentials.json does not exist on the FTP, it creates one
+    with a default superadmin user from Streamlit secrets.
     """
     if load_credentials_from_ftp() is None:
-        st.warning("`credentials.json` FTP-il kanapadavillai. Oru pudhiya file Super Admin-udan uruvaakkappadugiradhu.")
+        st.warning("`credentials.json` not found on FTP. A new file is being created with a Super Admin.")
         
         try:
-            # Secrets-il irundhu paadhukaappaana password-a edukkavum
+            # Get the secure password from secrets
             initial_admin_pass = st.secrets["initial_admin"]["password"]
         except (KeyError, AttributeError):
-            st.error("FATAL ERROR: `initial_admin` password Streamlit secrets-il configure seiyyappadavillai. App-a thodanga mudiyadhu.")
+            st.error("FATAL ERROR: `initial_admin` password is not configured in Streamlit secrets. The app cannot start.")
             st.stop()
 
         default_credentials = {
             "usernames": {
                 "superadmin": {
                     "name": "Super Admin",
-                    "password": hash_password(initial_admin_pass), # Secrets-il irundhu hash seiyappatta paadhukaappaana password
+                    "password": hash_password(initial_admin_pass), # Secure hashed password from secrets
                     "role": "SUPER_ADMIN",
                     "filter_value": None
                 }
@@ -87,23 +87,23 @@ def initialize_credentials_if_needed():
         }
         
         if save_credentials_to_ftp(default_credentials):
-            st.success("Default Super Admin uruvaakkappattadhu. Login seiyavum.")
+            st.success("Default Super Admin has been created. Please log in.")
             st.rerun()
         else:
-            st.error("FATAL ERROR: Credentials file-a FTP-il uruvaakka mudiyavillai.")
+            st.error("FATAL ERROR: Could not create the credentials file on the FTP server.")
             st.stop()
 
 
 # --- 3. FTP-BASED DATA LOADING FUNCTION ---
-@st.cache_data(ttl=300) # 5 nimidangalukku data-vai cache seiyavum
+@st.cache_data(ttl=300) # Cache the data for 5 minutes
 def load_main_data_from_ftp():
-    """primary.csv file-a FTP-la irundhu load seithu, clean seiyum."""
+    """Loads and cleans the primary.csv file from the FTP server."""
     try:
         ftp_creds = st.secrets["ftp"]
         ftp = FTP(ftp_creds['host'])
         ftp.login(user=ftp_creds['user'], passwd=ftp_creds['password'])
 
-        # primary.csv file-a memory-la download seiyavum
+        # Download the primary.csv file into memory
         in_memory_file = io.BytesIO()
         ftp.retrbinary(f"RETR {ftp_creds['primary_path']}", in_memory_file.write)
         in_memory_file.seek(0)
@@ -111,7 +111,7 @@ def load_main_data_from_ftp():
 
         df = pd.read_csv(in_memory_file, encoding='latin1', low_memory=False)
         
-        # Unga original data cleaning steps ( எந்த மாற்றமும் இல்லை )
+        # Your original data cleaning steps (No changes here)
         if 'Inv Date' not in df.columns:
             st.error("Data Error: The column 'Inv Date' was not found.")
             return None
@@ -127,16 +127,16 @@ def load_main_data_from_ftp():
                 df[col].fillna('Unknown', inplace=True)
         return df
     except ftplib.all_errors as e:
-        st.error(f"FTP Error: Data file-a kandupudikka mudiyavillai. Path sari paarkavum. Vivaram: {e}")
+        st.error(f"FTP Error: Could not find the data file. Please check the path. Details: {e}")
         return None
     except Exception as e:
         st.error(f"Error loading main data: {e}")
         return None
 
-# --- 4. UI FUNCTIONS ( எந்த மாற்றமும் இல்லை ) ---
+# --- 4. UI FUNCTIONS (No changes except for the bug fix) ---
 
 def user_management_ui(credentials, df):
-    """Super Admin-kaana User Management page - UPDATED with separate Add and Edit forms."""
+    """UI for the Super Admin to manage users - with Add and Edit forms."""
     st.subheader("👤 User Management")
 
     st.write("Existing Users:")
@@ -214,10 +214,16 @@ def user_management_ui(credentials, df):
                         dsm_options = sorted(df['DSM'].unique())
                         current_filter_index = dsm_options.index(edited_filter_value) if edited_filter_value in dsm_options else 0
                         edited_filter_value = st.selectbox("Select DSM Name", options=dsm_options, index=current_filter_index, key="edit_dsm")
+                    
+                    # --- THIS BLOCK IS THE FIX ---
                     elif edited_role == "ASM":
-                        dsm_options = sorted(df['ASM'].unique())
+                        # BUG FIX: The variable was incorrectly named 'dsm_options'. It is now corrected to 'asm_options'.
+                        asm_options = sorted(df['ASM'].unique()) 
                         current_filter_index = asm_options.index(edited_filter_value) if edited_filter_value in asm_options else 0
+                        # BUG FIX: The 'options' argument was also pointing to the wrong variable. Corrected to 'asm_options'.
                         edited_filter_value = st.selectbox("Select ASM Name", options=asm_options, index=current_filter_index, key="edit_asm")
+                    # --- END OF FIX ---
+                        
                     elif edited_role == "SO":
                         so_options = sorted(df['SO'].unique())
                         current_filter_index = so_options.index(edited_filter_value) if edited_filter_value in so_options else 0
@@ -247,10 +253,11 @@ def user_management_ui(credentials, df):
                         st.rerun()
 
 def main_dashboard_ui(df, user_role, user_filter_value):
-    """Ellarukum theriyura main dashboard - IDHU THAAN UNGA FULL DASHBOARD UI."""
+    """This is the main dashboard UI that is visible to everyone."""
     st.title("Sales Performance Dashboard 📊")
     st.caption(f"Dashboard Loaded: {datetime.now().strftime('%d %b %Y, %I:%M:%S %p')}")
 
+    # --- ROLE-BASED DATA FILTERING ---
     if user_role == "RGM": df = df[df['RGM'] == user_filter_value].copy()
     elif user_role == "DSM": df = df[df['DSM'] == user_filter_value].copy()
     elif user_role == "ASM": df = df[df['ASM'] == user_filter_value].copy()
@@ -260,6 +267,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
         st.warning(f"No data available for your access level ('{user_filter_value}'). Please check the 'Filter Value' in User Management.")
         return
 
+    # --- SIDEBAR FILTERS ---
     st.sidebar.title("Filters")
     min_date, max_date = df['Inv Date'].min().date(), df['Inv Date'].max().date()
     start_date, end_date = st.sidebar.date_input("Select a Date Range", value=(max_date, max_date), min_value=min_date, max_value=max_date)
@@ -272,21 +280,26 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     if user_role in ["SUPER_ADMIN", "ADMIN", "RGM"]:
         if selected_dsm := st.sidebar.multiselect("Filter by DSM", sorted(df_hierarchical_filtered['DSM'].unique())): 
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['DSM'].isin(selected_dsm)]
-    if user_role in ["SUPER_ADMIN", "ADMIN", "RGM", "DSM", "ASM"]:
+    if user_role in ["SUPER_ADMIN", "ADMIN", "RGM", "DSM"]: # Changed logic to follow hierarchy for ASM filter
         if selected_asm := st.sidebar.multiselect("Filter by ASM", sorted(df_hierarchical_filtered['ASM'].unique())): 
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['ASM'].isin(selected_asm)]
+    
+    # This filter is available to almost all roles
+    if user_role in ["SUPER_ADMIN", "ADMIN", "RGM", "DSM", "ASM"]:
         if selected_cc := st.sidebar.multiselect("Filter by CustomerClass", sorted(df_hierarchical_filtered['CustomerClass'].unique())): 
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['CustomerClass'].isin(selected_cc)]
     
     if selected_so := st.sidebar.multiselect("Filter by SO", sorted(df_hierarchical_filtered['SO'].unique())): 
         df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['SO'].isin(selected_so)]
 
+    # --- FINAL FILTERED DATAFRAME ---
     df_filtered = df_hierarchical_filtered[(df_hierarchical_filtered['Inv Date'].dt.date >= start_date) & (df_hierarchical_filtered['Inv Date'].dt.date <= end_date)].copy()
     
     if df_filtered.empty:
         st.warning("No sales data available for the selected filters.")
         return
 
+    # --- YOUR ORIGINAL DASHBOARD UI STARTS HERE ---
     st.markdown("---")
     st.header(f"Snapshot for {start_date.strftime('%d-%b-%Y')} to {end_date.strftime('%d-%b-%Y')}")
     summary_total_net_Volume = df_filtered['Qty in Ltrs/Kgs'].sum() / 1000
@@ -335,27 +348,27 @@ def main_dashboard_ui(df, user_role, user_filter_value):
 
 # --- 5. AUTHENTICATION & PAGE ROUTING (MODIFIED FOR FTP) ---
 
-# App thodangum mun, secrets configure seiyappattulladha enru sari paarkavum
+# Before starting, check if secrets are configured
 if "ftp" not in st.secrets:
-    st.error("FTP credentials Streamlit secrets-il configure seiyyappadavillai. App-a thodanga mudiyadhu.")
+    st.error("FTP credentials are not configured in Streamlit secrets. The app cannot start.")
     st.stop()
 
-# Mudhalil credentials file-a uruvaakka/sari paarkka vendum
+# First, initialize/check the credentials file
 initialize_credentials_if_needed()
 credentials = load_credentials_from_ftp()
 
-# Credentials load seiyya mudiyavillai endral app-a niruthavum
+# If credentials could not be loaded, stop the app
 if not credentials:
-    st.error("FTP-il irundhu credentials-a load seiyya mudiyavillai. App setup sari illai.")
+    st.error("Could not load credentials from FTP. App setup is incomplete.")
     st.stop()
 
-# Session state-a initialize seiyavum
+# Initialize session state
 if 'authentication_status' not in st.session_state:
     st.session_state['authentication_status'] = None
 if 'username' not in st.session_state:
     st.session_state['username'] = None
 
-# Login seiyyaathavarukku login form-a kaattavum
+# Show the login form to non-authenticated users
 if not st.session_state['authentication_status']:
     with st.sidebar:
         st.header("Login")
@@ -377,7 +390,7 @@ if not st.session_state['authentication_status']:
                 st.error("Username/password is incorrect.")
     st.info("Please login to access the dashboard.")
 
-# Login seithavarukku dashboard-a kaattavum
+# Show the dashboard to authenticated users
 else:
     username = st.session_state['username']
     user_details = credentials["usernames"].get(username, {})
@@ -391,7 +404,7 @@ else:
             st.session_state.clear()
             st.rerun()
 
-    # Login vetrigaramaaga aanapin, main data-va load seiyavum
+    # Load the main data after a successful login
     df_main = load_main_data_from_ftp()
     
     if df_main is not None:
