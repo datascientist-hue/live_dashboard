@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import ftplib
 from ftplib import FTP  # Required to connect to the FTP server
 import io  # Required to handle files in memory
+from zoneinfo import ZoneInfo # NEW IMPORT: Required for timezone conversion
 
 # --- 1. APP CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Sales Dashboard")
@@ -98,10 +99,22 @@ def initialize_credentials_if_needed():
 @st.cache_data(ttl=300) # Cache the data for 5 minutes
 def load_main_data_from_ftp():
     """Loads and cleans the primary.csv file from the FTP server."""
+    modification_time_str = None # NEW: Initialize variable to hold the timestamp
     try:
         ftp_creds = st.secrets["ftp"]
         ftp = FTP(ftp_creds['host'])
         ftp.login(user=ftp_creds['user'], passwd=ftp_creds['password'])
+
+        # --- NEW BLOCK TO GET FILE MODIFICATION TIME ---
+        try:
+            # Ask the FTP server for the modification time of the primary file
+            mdtm_response = ftp.sendcmd(f"MDTM {ftp_creds['primary_path']}")
+            # The response is like "213 YYYYMMDDHHMMSS", we need the second part
+            modification_time_str = mdtm_response.split(' ')[1]
+        except ftplib.all_errors:
+            # If the server doesn't support this command, we just continue without the timestamp
+            pass
+        # --- END OF NEW BLOCK ---
 
         # Download the primary.csv file into memory
         in_memory_file = io.BytesIO()
@@ -111,10 +124,16 @@ def load_main_data_from_ftp():
 
         df = pd.read_csv(in_memory_file, encoding='latin1', low_memory=False)
         
-        # Your original data cleaning steps (No changes here)
+        if 'JCPeriod' in df.columns:
+            all_jcs = sorted(df['JCPeriod'].dropna().unique())
+            if len(all_jcs) > 6:
+                last_6_jcs = all_jcs[-6:]
+                df = df[df['JCPeriod'].isin(last_6_jcs)].copy()
+                st.toast(f"Showing data for the last 6 JC Periods for faster performance.", icon="⚡")
+        
         if 'Inv Date' not in df.columns:
             st.error("Data Error: The column 'Inv Date' was not found.")
-            return None
+            return None, None # MODIFIED: Return two values
         df['Inv Date'] = pd.to_datetime(df['Inv Date'], format='%d-%b-%y', errors='coerce')
         df.dropna(subset=['Inv Date'], inplace=True)
         numeric_cols = ['Qty in Ltrs/Kgs', 'Net Value']
@@ -125,15 +144,17 @@ def load_main_data_from_ftp():
         for col in key_cols:
             if col in df.columns:
                 df[col].fillna('Unknown', inplace=True)
-        return df
+        
+        return df, modification_time_str # MODIFIED: Return the DataFrame and the timestamp
+
     except ftplib.all_errors as e:
         st.error(f"FTP Error: Could not find the data file. Please check the path. Details: {e}")
-        return None
+        return None, None # MODIFIED: Return two values
     except Exception as e:
         st.error(f"Error loading main data: {e}")
-        return None
+        return None, None # MODIFIED: Return two values
 
-# --- 4. UI FUNCTIONS (No changes except for the bug fix) ---
+# --- 4. UI FUNCTIONS (No changes here) ---
 
 def user_management_ui(credentials, df):
     """UI for the Super Admin to manage users - with Add and Edit forms."""
@@ -214,16 +235,10 @@ def user_management_ui(credentials, df):
                         dsm_options = sorted(df['DSM'].unique())
                         current_filter_index = dsm_options.index(edited_filter_value) if edited_filter_value in dsm_options else 0
                         edited_filter_value = st.selectbox("Select DSM Name", options=dsm_options, index=current_filter_index, key="edit_dsm")
-                    
-                    # --- THIS BLOCK IS THE FIX ---
                     elif edited_role == "ASM":
-                        # BUG FIX: The variable was incorrectly named 'dsm_options'. It is now corrected to 'asm_options'.
                         asm_options = sorted(df['ASM'].unique()) 
                         current_filter_index = asm_options.index(edited_filter_value) if edited_filter_value in asm_options else 0
-                        # BUG FIX: The 'options' argument was also pointing to the wrong variable. Corrected to 'asm_options'.
                         edited_filter_value = st.selectbox("Select ASM Name", options=asm_options, index=current_filter_index, key="edit_asm")
-                    # --- END OF FIX ---
-                        
                     elif edited_role == "SO":
                         so_options = sorted(df['SO'].unique())
                         current_filter_index = so_options.index(edited_filter_value) if edited_filter_value in so_options else 0
@@ -254,10 +269,9 @@ def user_management_ui(credentials, df):
 
 def main_dashboard_ui(df, user_role, user_filter_value):
     """This is the main dashboard UI that is visible to everyone."""
-    st.title("Sales Performance Dashboard 📊")
-    st.caption(f"Dashboard Loaded: {datetime.now().strftime('%d %b %Y, %I:%M:%S %p')}")
+    # The title and caption are now handled in the main part of the app after login
+    # This keeps the UI consistent
 
-    # --- ROLE-BASED DATA FILTERING ---
     if user_role == "RGM": df = df[df['RGM'] == user_filter_value].copy()
     elif user_role == "DSM": df = df[df['DSM'] == user_filter_value].copy()
     elif user_role == "ASM": df = df[df['ASM'] == user_filter_value].copy()
@@ -267,7 +281,6 @@ def main_dashboard_ui(df, user_role, user_filter_value):
         st.warning(f"No data available for your access level ('{user_filter_value}'). Please check the 'Filter Value' in User Management.")
         return
 
-    # --- SIDEBAR FILTERS ---
     st.sidebar.title("Filters")
     min_date, max_date = df['Inv Date'].min().date(), df['Inv Date'].max().date()
     start_date, end_date = st.sidebar.date_input("Select a Date Range", value=(max_date, max_date), min_value=min_date, max_value=max_date)
@@ -280,11 +293,9 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     if user_role in ["SUPER_ADMIN", "ADMIN", "RGM"]:
         if selected_dsm := st.sidebar.multiselect("Filter by DSM", sorted(df_hierarchical_filtered['DSM'].unique())): 
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['DSM'].isin(selected_dsm)]
-    if user_role in ["SUPER_ADMIN", "ADMIN", "RGM", "DSM"]: # Changed logic to follow hierarchy for ASM filter
+    if user_role in ["SUPER_ADMIN", "ADMIN", "RGM", "DSM"]:
         if selected_asm := st.sidebar.multiselect("Filter by ASM", sorted(df_hierarchical_filtered['ASM'].unique())): 
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['ASM'].isin(selected_asm)]
-    
-    # This filter is available to almost all roles
     if user_role in ["SUPER_ADMIN", "ADMIN", "RGM", "DSM", "ASM"]:
         if selected_cc := st.sidebar.multiselect("Filter by CustomerClass", sorted(df_hierarchical_filtered['CustomerClass'].unique())): 
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['CustomerClass'].isin(selected_cc)]
@@ -292,14 +303,12 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     if selected_so := st.sidebar.multiselect("Filter by SO", sorted(df_hierarchical_filtered['SO'].unique())): 
         df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['SO'].isin(selected_so)]
 
-    # --- FINAL FILTERED DATAFRAME ---
     df_filtered = df_hierarchical_filtered[(df_hierarchical_filtered['Inv Date'].dt.date >= start_date) & (df_hierarchical_filtered['Inv Date'].dt.date <= end_date)].copy()
     
     if df_filtered.empty:
         st.warning("No sales data available for the selected filters.")
         return
 
-    # --- YOUR ORIGINAL DASHBOARD UI STARTS HERE ---
     st.markdown("---")
     st.header(f"Snapshot for {start_date.strftime('%d-%b-%Y')} to {end_date.strftime('%d-%b-%Y')}")
     summary_total_net_Volume = df_filtered['Qty in Ltrs/Kgs'].sum() / 1000
@@ -370,6 +379,8 @@ if 'username' not in st.session_state:
 
 # Show the login form to non-authenticated users
 if not st.session_state['authentication_status']:
+    st.title("Sales Performance Dashboard 📊")
+    st.info("Please login to access the dashboard.")
     with st.sidebar:
         st.header("Login")
         login_username = st.text_input("Username").lower()
@@ -388,8 +399,7 @@ if not st.session_state['authentication_status']:
             
             if st.session_state['authentication_status'] is False:
                 st.error("Username/password is incorrect.")
-    st.info("Please login to access the dashboard.")
-
+    
 # Show the dashboard to authenticated users
 else:
     username = st.session_state['username']
@@ -405,8 +415,27 @@ else:
             st.rerun()
 
     # Load the main data after a successful login
-    df_main = load_main_data_from_ftp()
+    df_main, mod_time = load_main_data_from_ftp()
     
+    # --- NEW BLOCK TO DISPLAY THE TITLE AND REFRESH TIME ---
+    st.title("Sales Performance Dashboard 📊")
+    if mod_time:
+        try:
+            # Parse the UTC time string from the FTP server (Format: YYYYMMDDHHMMSS)
+            utc_time = datetime.strptime(mod_time, '%Y%m%d%H%M%S').replace(tzinfo=ZoneInfo("UTC"))
+            # Convert the time to Indian Standard Time (IST)
+            ist_time = utc_time.astimezone(ZoneInfo("Asia/Kolkata"))
+            # Format the time for display
+            formatted_time = ist_time.strftime("%d %b %Y, %I:%M:%S %p IST")
+            st.caption(f"Data Last Refreshed: {formatted_time}")
+        except Exception:
+            # If there's an error in parsing, fall back to the old method
+            st.caption(f"Dashboard Loaded: {datetime.now().strftime('%d %b %Y, %I:%M:%S %p')}")
+    else:
+        # If the modification time couldn't be fetched, use the old method
+        st.caption(f"Dashboard Loaded: {datetime.now().strftime('%d %b %Y, %I:%M:%S %p')}")
+    # --- END OF NEW DISPLAY BLOCK ---
+
     if df_main is not None:
         if user_role == "SUPER_ADMIN":
             page = st.sidebar.radio("Navigation", ["Dashboard", "User Management"])
