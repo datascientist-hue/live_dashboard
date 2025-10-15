@@ -217,7 +217,7 @@ def user_management_ui(credentials, df):
                     elif edited_role == "ASM":
                         dsm_options = sorted(df['ASM'].unique())
                         current_filter_index = asm_options.index(edited_filter_value) if edited_filter_value in asm_options else 0
-                        edited_filter_value = st.selectbox("Select ASM Name", options=dsm_options, index=current_filter_index, key="edit_asm")
+                        edited_filter_value = st.selectbox("Select ASM Name", options=asm_options, index=current_filter_index, key="edit_asm")
                     elif edited_role == "SO":
                         so_options = sorted(df['SO'].unique())
                         current_filter_index = so_options.index(edited_filter_value) if edited_filter_value in so_options else 0
