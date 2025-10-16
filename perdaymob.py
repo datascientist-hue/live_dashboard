@@ -292,7 +292,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     
     if user_role == "RGM": df = df[df['RGM'] == user_filter_value].copy()
     elif user_role == "DSM": df = df[df['DSM'] == user_filter_value].copy()
-    elif user_role == "ASM": df = df[df['ASM'] == user_filter_value].copy()
+    elif user_role == "ASM": df = df[df['ASM'] .isin(user_filter_value)].copy()
     elif user_role == "SO": df = df[df['SO'] == user_filter_value].copy()
     
     if df.empty:
@@ -367,7 +367,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
         st.dataframe(prod_ctg_performance, use_container_width=True)
     elif view_selection == 'Distributor Wise':
         st.subheader("Performance by Distributor")
-        db_performance = df_filtered.groupby(['Cust Name', 'City']).agg(Total_Value=('Net Value', 'sum'), Total_Tonnes=('Qty in Ltrs/Kgs', lambda x: x.sum() / 1000), Unique_Products_Purchased_ct=('Prod Ctg', 'nunique'), Unique_Products_Purchased=('Prod Ctg','unique')).reset_index().sort_values('Total_Value', ascending=False)
+        db_performance = df_filtered.groupby(['Cust Name', 'Cust Code', 'City']).agg(Total_Value=('Net Value', 'sum'), Total_Tonnes=('Qty in Ltrs/Kgs', lambda x: x.sum() / 1000), Unique_Products_Purchased_ct=('Prod Ctg', 'nunique'), Unique_Products_Purchased=('Prod Ctg','unique')).reset_index().sort_values('Total_Value', ascending=False)
         db_performance['Total_Value'] = db_performance['Total_Value'].map('₹ {:,.0f}'.format)
         db_performance['Total_Tonnes'] = db_performance['Total_Tonnes'].map('{:.2f} T'.format)
         st.dataframe(db_performance, use_container_width=True)
@@ -440,7 +440,7 @@ else:
         st.toast(status_message, icon="⚡")
     
     st.title("Sales Performance Dashboard 📊")
-    if mod_time:
+    if mod_time: 
         try:
             utc_time = datetime.strptime(mod_time, '%Y%m%d%H%M%S').replace(tzinfo=ZoneInfo("UTC"))
             ist_time = utc_time.astimezone(ZoneInfo("Asia/Kolkata"))
