@@ -10,6 +10,7 @@ from ftplib import FTP  # Required to connect to the FTP server
 import io  # Required to handle files in memory
 from zoneinfo import ZoneInfo # Required for timezone conversion
 import time
+import streamlit_authenticator as stauth
 
 # --- 1. APP CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Sales Dashboard")
@@ -62,6 +63,7 @@ def initialize_credentials_if_needed():
     """
     If credentials.json does not exist on the FTP, it creates one
     with a default superadmin user from Streamlit secrets.
+    --- CORRECTED to use the new streamlit-authenticator format ---
     """
     if load_credentials_from_ftp() is None:
         st.warning("`credentials.json` not found on FTP. A new file is being created with a Super Admin.")
@@ -72,14 +74,23 @@ def initialize_credentials_if_needed():
             st.error("FATAL ERROR: `initial_admin` password is not configured in Streamlit secrets. The app cannot start.")
             st.stop()
 
+        # --- FIX: Create credentials in the new format required by the library ---
         default_credentials = {
-            "usernames": {
-                "superadmin": {
-                    "name": "Super Admin",
-                    "password": hash_password(initial_admin_pass),
-                    "role": "SUPER_ADMIN",
-                    "filter_value": None
+            "credentials": {
+                "usernames": {
+                    "superadmin": {
+                        "email": "superadmin@example.com",
+                        "name": "Super Admin",
+                        "password": hash_password(initial_admin_pass),
+                        "role": "SUPER_ADMIN",
+                        "filter_value": None
+                    }
                 }
+            },
+            "cookie": {
+                "expiry_days": 30,
+                "key": "a_unique_and_random_secret_key", # This should be a random string
+                "name": "sales_dashboard_cookie"
             }
         }
         
@@ -91,7 +102,7 @@ def initialize_credentials_if_needed():
             st.stop()
 
 
-# --- 3. FTP-BASED DATA LOADING FUNCTION (WITH LAST 45 DAYS FILTER) ---
+# --- 3. FTP-BASED DATA LOADING FUNCTION (No changes here) ---
 @st.cache_data(ttl=300)
 def load_main_data_from_ftp():
     """
@@ -125,23 +136,10 @@ def load_main_data_from_ftp():
         df['Inv Date'] = pd.to_datetime(df['Inv Date'], format='%d-%b-%y', errors='coerce')
         df.dropna(subset=['Inv Date'], inplace=True)
 
-        # ======================================================================================
-        # --- NEW OPTIMIZATION BLOCK: FILTER FOR LAST 45 DAYS ---
-        
-        # 1. Define the date range: today and 45 days ago.
-        # We convert to datetime objects to ensure a correct comparison.
         today = pd.to_datetime(datetime.now().date())
         start_date_filter = today - timedelta(days=45)
-
-        # 2. Filter the DataFrame to keep only rows within the last 45 days.
-        # This is the core of the performance improvement.
         df = df[df['Inv Date'] >= start_date_filter].copy()
-        
-        # 3. Set a status message to inform the user.
         status_msg = "Showing data from the last 45 days for faster performance."
-
-        # --- END OF OPTIMIZATION BLOCK ---
-        # ======================================================================================
 
         numeric_cols = ['Qty in Ltrs/Kgs', 'Net Value']
         for col in numeric_cols:
@@ -161,15 +159,18 @@ def load_main_data_from_ftp():
         error_msg = f"Error loading main data: {e}"
         return None, None, error_msg, None
 
-# --- 4. UI FUNCTIONS (No changes here) ---
+# --- 4. UI FUNCTIONS (FULLY CORRECTED) ---
 
 def user_management_ui(credentials, df):
     """UI for the Super Admin to manage users - with Add and Edit forms."""
     st.subheader("👤 User Management")
 
+    # --- FIX: This is the dictionary that now contains the user data ---
+    user_dict = credentials['credentials']['usernames']
+
     st.write("Existing Users:")
-    users_data = [{"Username": u, "Name": d["name"], "Role": d["role"], "Filter Value": d.get("filter_value", "N/A")} for u, d in credentials["usernames"].items()]
-    st.dataframe(pd.DataFrame(users_data), use_container_width=True)
+    users_data = [{"Username": u, "Name": d["name"], "Role": d.get("role", "N/A"), "Filter Value": d.get("filter_value", "N/A")} for u, d in user_dict.items()]
+    st.dataframe(pd.DataFrame(users_data), use_container_width=True, hide_index=True)
 
     with st.expander("➕ Add New User", expanded=False):
         with st.form("add_user_form", clear_on_submit=True):
@@ -198,10 +199,13 @@ def user_management_ui(credentials, df):
             if st.form_submit_button("Add User"):
                 if not all([new_username, new_name, new_password, new_role]):
                     st.error("Please fill all fields for the new user.")
-                elif new_username in credentials["usernames"]:
+                # FIX: Check for username in the correct dictionary
+                elif new_username in user_dict:
                     st.error(f"Username '{new_username}' already exists. Please choose a different one.")
                 else:
-                    credentials["usernames"][new_username] = {
+                    # FIX: Add the new user to the correct dictionary
+                    user_dict[new_username] = {
+                        "email": f"{new_username}@example.com", # Added email for compatibility
                         "name": new_name,
                         "password": hash_password(new_password),
                         "role": new_role,
@@ -212,14 +216,16 @@ def user_management_ui(credentials, df):
                         st.rerun()
 
     with st.expander("✏️ Edit Existing User", expanded=True):
+        # FIX: Get options from the correct dictionary
         user_to_edit = st.selectbox(
             "Select User to Edit", 
-            options=[u for u in credentials["usernames"].keys() if u != "superadmin"],
+            options=[u for u in user_dict.keys() if u != "superadmin"],
             index=None,
             placeholder="Choose a user..."
         )
         if user_to_edit:
-            user_data = credentials["usernames"][user_to_edit]
+            # FIX: Get data from the correct dictionary
+            user_data = user_dict[user_to_edit]
             with st.form("edit_user_form"):
                 st.write(f"Now editing user: **{user_to_edit}**")
                 
@@ -230,7 +236,7 @@ def user_management_ui(credentials, df):
                 with col2:
                     edited_password = st.text_input("New Password (leave blank to keep unchanged)", type="password")
                     role_options = ["ADMIN", "RGM", "DSM", "ASM" ,"SO"]
-                    current_role_index = role_options.index(user_data["role"]) if user_data["role"] in role_options else 0
+                    current_role_index = role_options.index(user_data.get("role")) if user_data.get("role") in role_options else 0
                     edited_role = st.selectbox("Role", role_options, index=current_role_index, key="edit_role")
                 with col3:
                     edited_filter_value = user_data.get("filter_value")
@@ -247,18 +253,10 @@ def user_management_ui(credentials, df):
                         current_selection = user_data.get("filter_value")
                         default_selection = []
                         if isinstance(current_selection, list):
-                            # If it's already a list, use it.
                             default_selection = [asm for asm in current_selection if asm in asm_options]
                         elif current_selection in asm_options:
-                             # If it's a single item, put it in a list.
                              default_selection = [current_selection]
-                        edited_filter_value = st.multiselect(
-                            "Select ASM Name(s)", 
-                            options=asm_options, 
-                            default=default_selection, 
-                            key="edit_asm"
-                        )
-                        
+                        edited_filter_value = st.multiselect("Select ASM Name(s)", options=asm_options, default=default_selection, key="edit_asm")
                     elif edited_role == "SO":
                         so_options = sorted(df['SO'].unique())
                         current_filter_index = so_options.index(edited_filter_value) if edited_filter_value in so_options else 0
@@ -268,21 +266,24 @@ def user_management_ui(credentials, df):
                         st.write("No filter needed for ADMIN role.")
 
                 if st.form_submit_button("Save Changes"):
-                    credentials["usernames"][user_to_edit]["name"] = edited_name
-                    credentials["usernames"][user_to_edit]["role"] = edited_role
-                    credentials["usernames"][user_to_edit]["filter_value"] = edited_filter_value
+                    # FIX: Update the correct dictionary
+                    user_dict[user_to_edit]["name"] = edited_name
+                    user_dict[user_to_edit]["role"] = edited_role
+                    user_dict[user_to_edit]["filter_value"] = edited_filter_value
                     if edited_password:
-                        credentials["usernames"][user_to_edit]["password"] = hash_password(edited_password)
+                        user_dict[user_to_edit]["password"] = hash_password(edited_password)
                     if save_credentials_to_ftp(credentials):
                         st.success(f"User '{user_to_edit}' updated successfully!")
                         st.rerun()
 
     with st.expander("➖ Delete User", expanded=False):
          with st.form("delete_form", clear_on_submit=True):
-            user_to_delete = st.selectbox("Select User to Delete", options=[u for u in credentials["usernames"].keys() if u not in ["superadmin"]], key="delete_select")
+            # FIX: Get options from the correct dictionary
+            user_to_delete = st.selectbox("Select User to Delete", options=[u for u in user_dict.keys() if u not in ["superadmin"]], key="delete_select")
             if st.form_submit_button("Delete User"):
-                if user_to_delete in credentials["usernames"]:
-                    del credentials["usernames"][user_to_delete]
+                # FIX: Delete from the correct dictionary
+                if user_to_delete in user_dict:
+                    del user_dict[user_to_delete]
                     if save_credentials_to_ftp(credentials):
                         st.success(f"User '{user_to_delete}' deleted!")
                         st.rerun()
@@ -290,9 +291,10 @@ def user_management_ui(credentials, df):
 def main_dashboard_ui(df, user_role, user_filter_value):
     """This is the main dashboard UI that is visible to everyone."""
     
+    # --- FIX: Corrected syntax error: df['ASM'] .isin -> df['ASM'].isin ---
     if user_role == "RGM": df = df[df['RGM'] == user_filter_value].copy()
     elif user_role == "DSM": df = df[df['DSM'] == user_filter_value].copy()
-    elif user_role == "ASM": df = df[df['ASM'] .isin(user_filter_value)].copy()
+    elif user_role == "ASM": df = df[df['ASM'].isin(user_filter_value)].copy()
     elif user_role == "SO": df = df[df['SO'] == user_filter_value].copy()
     
     if df.empty:
@@ -358,22 +360,33 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     with kpi3: st.metric(label="Past 7 Days Volume", value=f"{past_7_days_volume:.2f} T", help=f"Total volume from {seven_day_start_date.strftime('%d-%b')} to {single_kpi_date.strftime('%d-%b')}")
     st.markdown("---")
     st.header("Detailed Performance View")
-    view_selection = st.radio("Choose a view for the table below:", ['Product Wise', 'Distributor Wise'], horizontal=True)
+    view_selection = st.radio("Choose a view for the table below:", ['Product Wise', 'Distributor Wise','ASE wise', 'SO Wise'], horizontal=True)
     if view_selection == 'Product Wise':
         st.subheader("Performance by Product Category")
-        prod_ctg_performance = df_filtered.groupby('Prod Ctg').agg(Total_Value=('Net Value', 'sum'), Total_Tonnes=('Qty in Ltrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('Cust Name', 'nunique')).reset_index().sort_values('Total_Value', ascending=False)
+        prod_ctg_performance = df_filtered.groupby('Prod Ctg').agg(Total_Value=('Net Value', 'sum'), Total_Tonnes=('Qty in Ltrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('Cust Name', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
         prod_ctg_performance['Total_Value'] = prod_ctg_performance['Total_Value'].map('₹ {:,.0f}'.format)
         prod_ctg_performance['Total_Tonnes'] = prod_ctg_performance['Total_Tonnes'].map('{:.2f} T'.format)
-        st.dataframe(prod_ctg_performance, use_container_width=True)
+        st.dataframe(prod_ctg_performance, use_container_width=True, hide_index=True)
     elif view_selection == 'Distributor Wise':
         st.subheader("Performance by Distributor")
-        db_performance = df_filtered.groupby(['Cust Name', 'Cust Code', 'City']).agg(Total_Value=('Net Value', 'sum'), Total_Tonnes=('Qty in Ltrs/Kgs', lambda x: x.sum() / 1000), Unique_Products_Purchased_ct=('Prod Ctg', 'nunique'), Unique_Products_Purchased=('Prod Ctg','unique')).reset_index().sort_values('Total_Value', ascending=False)
+        db_performance = df_filtered.groupby(['Cust Code', 'Cust Name', 'City']).agg(Total_Value=('Net Value', 'sum'), Total_Tonnes=('Qty in Ltrs/Kgs', lambda x: x.sum() / 1000), Unique_Products_Purchased_ct=('Prod Ctg', 'nunique'), Unique_Products_Purchased=('Prod Ctg','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
         db_performance['Total_Value'] = db_performance['Total_Value'].map('₹ {:,.0f}'.format)
         db_performance['Total_Tonnes'] = db_performance['Total_Tonnes'].map('{:.2f} T'.format)
-        st.dataframe(db_performance, use_container_width=True)
+        st.dataframe(db_performance, use_container_width=True, hide_index=True)
+    elif view_selection == 'ASE wise':
+        st.subheader("Performance by ASE")
+        ASE_performance = df_filtered.groupby(['ASM']).agg(Total_Value=('Net Value', 'sum'), Total_Tonnes=('Qty in Ltrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('Cust Code', 'unique'),Unique_Products_ct=('Prod Ctg', 'nunique'), Unique_Products=('Prod Ctg','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        ASE_performance['Total_Value'] = ASE_performance['Total_Value'].map('₹ {:,.0f}'.format)
+        ASE_performance['Total_Tonnes'] = ASE_performance['Total_Tonnes'].map('{:.2f} T'.format)
+        st.dataframe(ASE_performance, use_container_width=True, hide_index=True)
+    elif view_selection == 'SO Wise':
+        st.subheader("Performance by SO")
+        SO_performance = df_filtered.groupby(['SO','ASM','City']).agg(Total_Value=('Net Value', 'sum'), Total_Tonnes=('Qty in Ltrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('Cust Code', 'unique'),Unique_Products_ct=('Prod Ctg', 'nunique'), Unique_Products=('Prod Ctg','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        SO_performance['Total_Value'] = SO_performance['Total_Value'].map('₹ {:,.0f}'.format)
+        SO_performance['Total_Tonnes'] = SO_performance['Total_Tonnes'].map('{:.2f} T'.format)
+        st.dataframe(SO_performance, use_container_width=True, hide_index=True)
 
-
-# --- 5. AUTHENTICATION & PAGE ROUTING (MODIFIED FOR FTP) ---
+# --- 5. AUTHENTICATION & PAGE ROUTING (UPGRADED AND FULLY CORRECTED) ---
 
 if "ftp" not in st.secrets:
     st.error("FTP credentials are not configured in Streamlit secrets. The app cannot start.")
@@ -386,51 +399,33 @@ if not credentials:
     st.error("Could not load credentials from FTP. App setup is incomplete.")
     st.stop()
 
-if 'authentication_status' not in st.session_state:
-    st.session_state['authentication_status'] = None
-if 'username' not in st.session_state:
-    st.session_state['username'] = None
+authenticator = stauth.Authenticate(
+    credentials['credentials'],
+    credentials['cookie']['name'],
+    credentials['cookie']['key'],
+    credentials['cookie']['expiry_days']
+)
 
-if not st.session_state['authentication_status']:
-    st.title("Sales Performance Dashboard 📊")
-    st.info("Please login to access the dashboard.")
+st.title("Sales Performance Dashboard 📊")
+authenticator.login()
+
+if st.session_state["authentication_status"]:
     with st.sidebar:
-        st.header("Login")
-        login_username = st.text_input("Username").lower()
-        login_password = st.text_input("Password", type="password")
-        if st.button("Login"):
-            if login_username in credentials["usernames"]:
-                stored_hash = credentials["usernames"][login_username]["password"].encode()
-                if bcrypt.checkpw(login_password.encode(), stored_hash):
-                    st.session_state['authentication_status'] = True
-                    st.session_state['username'] = login_username
-                    st.rerun()
-                else:
-                    st.session_state['authentication_status'] = False
-            else:
-                st.session_state['authentication_status'] = False
-            
-            if st.session_state['authentication_status'] is False:
-                st.error("Username/password is incorrect.")
-    
-else:
-    username = st.session_state['username']
-    user_details = credentials["usernames"].get(username, {})
+        st.success(f'Welcome *{st.session_state["name"]}*')
+        if st.sidebar.button("Refresh Data ❄️"):
+            st.cache_data.clear()
+            st.rerun()
+        authenticator.logout('Logout', 'main')
+
+    username = st.session_state["username"]
+    user_details = credentials['credentials']['usernames'].get(username, {})
     user_role = user_details.get("role")
     user_filter_value = user_details.get("filter_value")
-    name = user_details.get("name")
     
-    with st.sidebar:
-        st.success(f"Welcome *{name}* ({user_role})")
-        if st.button("Logout"):
-            st.session_state.clear()
-            st.rerun()
-    # --- Loading Time-a Kanakida Pudhiya Code ---
-    start_timer = time.time()  # Timer-a start pannu
+    start_timer = time.time()
     df_main, mod_time, error_message, status_message = load_main_data_from_ftp()
-    end_timer = time.time()    # Timer-a stop pannu
-    loading_time = end_timer - start_timer # Motha nerathai kanakidu
-    # --- End of New Code ---
+    end_timer = time.time()
+    loading_time = end_timer - start_timer
     
     if error_message:
         st.error(error_message)
@@ -439,7 +434,6 @@ else:
     if status_message:
         st.toast(status_message, icon="⚡")
     
-    st.title("Sales Performance Dashboard 📊")
     if mod_time: 
         try:
             utc_time = datetime.strptime(mod_time, '%Y%m%d%H%M%S').replace(tzinfo=ZoneInfo("UTC"))
@@ -450,6 +444,7 @@ else:
             st.caption(f"Dashboard Loaded: {datetime.now().strftime('%d %b %Y, %I:%M:%S %p')}")
     else:
         st.caption(f"Dashboard Loaded: {datetime.now().strftime('%d %b %Y, %I:%M:%S %p')}")
+    st.caption(f"Dashboard loaded in {loading_time:.2f} seconds 🚀")
 
     if df_main is not None:
         if user_role == "SUPER_ADMIN":
@@ -462,3 +457,8 @@ else:
             main_dashboard_ui(df_main, user_role, user_filter_value)
     else:
         st.error("Could not load dashboard data.")
+
+elif st.session_state["authentication_status"] is False:
+    st.error('Username/password is incorrect')
+elif st.session_state["authentication_status"] is None:
+    st.warning('Please enter your username and password')
