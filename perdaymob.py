@@ -128,7 +128,7 @@ def load_main_data_from_ftp():
         in_memory_file.seek(0)
         ftp.quit()
 
-        df = pd.read_csv(in_memory_file, encoding='latin1', low_memory=False)
+        df = pd.read_parquet(in_memory_file)
         
         if 'Inv Date' not in df.columns:
             return None, None, "Data Error: The column 'Inv Date' was not found.", None
