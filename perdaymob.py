@@ -12,6 +12,10 @@ from zoneinfo import ZoneInfo # Required for timezone conversion
 import time
 import streamlit_authenticator as stauth
 
+
+
+
+
 # --- 1. APP CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Sales Dashboard")
 
@@ -101,51 +105,85 @@ def initialize_credentials_if_needed():
             st.error("FATAL ERROR: Could not create the credentials file on the FTP server.")
             st.stop()
 
-
-# --- 3. FTP-BASED DATA LOADING FUNCTION (No changes here) ---
+# --- 3. FTP-BASED DATA LOADING FUNCTION (UPDATED TO MAP CATEGORIES AND NEW HEADERS) ---
 @st.cache_data(ttl=300)
 def load_main_data_from_ftp():
     """
-    Loads and cleans the primary.csv file from the FTP server.
-    MODIFIED: Now filters for the LAST 45 DAYS for maximum speed.
+    Loads primary and category data from FTP, maps the updated product categories,
+    and filters for the LAST 45 DAYS for maximum speed.
     Returns a tuple: (DataFrame, mod_time, error_message, status_message)
     """
     modification_time_str = None
     status_msg = None
     try:
         ftp_creds = st.secrets["ftp"]
-        ftp = FTP(ftp_creds['host'])
-        ftp.login(user=ftp_creds['user'], passwd=ftp_creds['password'])
-
-        try:
-            mdtm_response = ftp.sendcmd(f"MDTM {ftp_creds['primary_path']}")
-            modification_time_str = mdtm_response.split(' ')[1]
-        except ftplib.all_errors:
-            pass
-
-        in_memory_file = io.BytesIO()
-        ftp.retrbinary(f"RETR {ftp_creds['primary_path']}", in_memory_file.write)
-        in_memory_file.seek(0)
-        ftp.quit()
-
-        df = pd.read_parquet(in_memory_file)
         
-        if 'Inv Date' not in df.columns:
-            return None, None, "Data Error: The column 'Inv Date' was not found.", None
+        # Helper function to download a file from FTP
+        def download_file(ftp, path):
+            in_memory_file = io.BytesIO()
+            ftp.retrbinary(f"RETR {path}", in_memory_file.write)
+            in_memory_file.seek(0)
+            return in_memory_file
+
+        # Connect and download both files
+        with FTP(ftp_creds['host']) as ftp:
+            ftp.login(user=ftp_creds['user'], passwd=ftp_creds['password'])
+            
+            # Get modification time for the main file
+            try:
+                mdtm_response = ftp.sendcmd(f"MDTM {ftp_creds['primary_path']}")
+                modification_time_str = mdtm_response.split(' ')[1]
+            except ftplib.all_errors:
+                pass
+
+            # Download primary sales data and category mapping data
+            primary_file_obj = download_file(ftp, ftp_creds['primary_path'])
+            category_file_obj = download_file(ftp, ftp_creds['category_path'])
+
+        # Load both files into pandas DataFrames
+        df_primary = pd.read_parquet(primary_file_obj)
+        df_category_map = pd.read_parquet(category_file_obj)
+
+        # --- LOGIC TO MAP AND UPDATE PRODUCT CATEGORIES ---
+        # Assumption: Primary file has 'ProductCategory', mapping file has 'prod ctg' and 'upd_prod_ctg'.
+        if 'ProductCategory' in df_primary.columns and 'prod ctg' in df_category_map.columns and 'upd_prod_ctg' in df_category_map.columns:
+            
+            # --- FIX: Rename the column in the mapping file to match the primary file for merging ---
+            df_category_map.rename(columns={'prod ctg': 'ProductCategory'}, inplace=True)
+            
+            # Now, merge the main data with the category map using the common column 'ProductCategory'
+            df = pd.merge(df_primary, df_category_map, on='ProductCategory', how='left')
+            
+            # --- FIX: Use the correct column name 'upd_prod_ctg' from the mapping file ---
+            # Update the 'ProductCategory' column.
+            # If a new category exists in 'upd_prod_ctg', use it. Otherwise, keep the original 'ProductCategory'.
+            df['ProductCategory'] = df['upd_prod_ctg'].fillna(df['ProductCategory'])
+            
+            # --- FIX: Drop the correct column name 'upd_prod_ctg' ---
+            df.drop(columns=['upd_prod_ctg'], inplace=True)
+            
+        else:
+            # If the mapping can't be done, just use the primary data and show a warning
+            df = df_primary
+            st.warning("Could not map updated product categories. Check column names ('ProductCategory' in primary file; 'prod ctg', 'upd_prod_ctg' in category file).")
+        # --- END OF MAPPING LOGIC ---
+
+        if 'InvDate' not in df.columns:
+            return None, None, "Data Error: The column 'InvDate' was not found.", None
         
-        df['Inv Date'] = pd.to_datetime(df['Inv Date'], format='%d-%b-%y', errors='coerce')
-        df.dropna(subset=['Inv Date'], inplace=True)
+        df['InvDate'] = pd.to_datetime(df['InvDate'], format='%d-%b-%y', errors='coerce')
+        df.dropna(subset=['InvDate'], inplace=True)
 
         today = pd.to_datetime(datetime.now().date())
         start_date_filter = today - timedelta(days=45)
-        df = df[df['Inv Date'] >= start_date_filter].copy()
+        df = df[df['InvDate'] >= start_date_filter].copy()
         status_msg = "Showing data from the last 45 days for faster performance."
 
-        numeric_cols = ['Qty in Ltrs/Kgs', 'Net Value']
+        numeric_cols = ['PrimaryQtyInLtrs/Kgs', 'PrimaryLineTotalBeforeTax']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
-        key_cols = ['ASM', 'RGM', 'DSM', 'SO', 'Prod Ctg', 'Cust Name', 'JCPeriod', 'CustomerClass']
+        key_cols = ['ASM', 'RGM', 'DSM', 'SO', 'ProductCategory', 'BP Name', 'JCPeriodNum', 'CustomerClass']
         for col in key_cols:
             if col in df.columns:
                 df[col].fillna('Unknown', inplace=True)
@@ -302,7 +340,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
         return
 
     st.sidebar.title("Filters")
-    min_date, max_date = df['Inv Date'].min().date(), df['Inv Date'].max().date()
+    min_date, max_date = df['InvDate'].min().date(), df['InvDate'].max().date()
     start_date, end_date = st.sidebar.date_input("Select a Date Range", value=(max_date, max_date), min_value=min_date, max_value=max_date)
     
     df_hierarchical_filtered = df.copy()
@@ -323,7 +361,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     if selected_so := st.sidebar.multiselect("Filter by SO", sorted(df_hierarchical_filtered['SO'].unique())): 
         df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['SO'].isin(selected_so)]
 
-    df_filtered = df_hierarchical_filtered[(df_hierarchical_filtered['Inv Date'].dt.date >= start_date) & (df_hierarchical_filtered['Inv Date'].dt.date <= end_date)].copy()
+    df_filtered = df_hierarchical_filtered[(df_hierarchical_filtered['InvDate'].dt.date >= start_date) & (df_hierarchical_filtered['InvDate'].dt.date <= end_date)].copy()
     
     if df_filtered.empty:
         st.warning("No sales data available for the selected filters.")
@@ -331,11 +369,11 @@ def main_dashboard_ui(df, user_role, user_filter_value):
 
     st.markdown("---")
     st.header(f"Snapshot for {start_date.strftime('%d-%b-%Y')} to {end_date.strftime('%d-%b-%Y')}")
-    summary_total_net_Volume = df_filtered['Qty in Ltrs/Kgs'].sum() / 1000
-    summary_total_net_value = df_filtered['Net Value'].sum()
-    summary_unique_invoices = df_filtered['Inv Num'].nunique()
-    summary_unique_dbs = df_filtered['Cust Name'].nunique()
-    Unique_prod_ctg = df_filtered['Prod Ctg'].nunique()
+    summary_total_net_Volume = df_filtered['PrimaryQtyInLtrs/Kgs'].sum() / 1000
+    summary_total_net_value = df_filtered['PrimaryLineTotalBeforeTax'].sum()
+    summary_unique_invoices = df_filtered['InvNum'].nunique()
+    summary_unique_dbs = df_filtered['BP Name'].nunique()
+    Unique_prod_ctg = df_filtered['ProductCategory'].nunique()
     col1, col2, col3 = st.columns(3)
     col1.metric(label="Unique Prod Ctg", value=f"{Unique_prod_ctg}")
     col2.metric(label="Total Net Value", value=f"₹ {summary_total_net_value:,.0f}")
@@ -346,42 +384,75 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     st.markdown("---")
     st.header("Volume Comparison")
     single_kpi_date = end_date
-    df_today = df_hierarchical_filtered[df_hierarchical_filtered['Inv Date'].dt.date == single_kpi_date]
-    todays_volume = df_today['Qty in Ltrs/Kgs'].sum() / 1000
+    df_today = df_hierarchical_filtered[df_hierarchical_filtered['InvDate'].dt.date == single_kpi_date]
+    todays_volume = df_today['PrimaryQtyInLtrs/Kgs'].sum() / 1000
     previous_day = single_kpi_date - timedelta(days=1)
-    df_previous_day = df_hierarchical_filtered[df_hierarchical_filtered['Inv Date'].dt.date == previous_day]
-    yesterdays_volume = df_previous_day['Qty in Ltrs/Kgs'].sum() / 1000
+    df_previous_day = df_hierarchical_filtered[df_hierarchical_filtered['InvDate'].dt.date == previous_day]
+    yesterdays_volume = df_previous_day['PrimaryQtyInLtrs/Kgs'].sum() / 1000
     seven_day_start_date = single_kpi_date - timedelta(days=6)
-    df_last_7_days = df_hierarchical_filtered[(df_hierarchical_filtered['Inv Date'].dt.date >= seven_day_start_date) & (df_hierarchical_filtered['Inv Date'].dt.date <= single_kpi_date)]
-    past_7_days_volume = df_last_7_days['Qty in Ltrs/Kgs'].sum() / 1000
+    df_last_7_days = df_hierarchical_filtered[(df_hierarchical_filtered['InvDate'].dt.date >= seven_day_start_date) & (df_hierarchical_filtered['InvDate'].dt.date <= single_kpi_date)]
+    past_7_days_volume = df_last_7_days['PrimaryQtyInLtrs/Kgs'].sum() / 1000
     kpi1, kpi2, kpi3 = st.columns(3)
     with kpi1: st.metric(label=f"End Date Volume ({single_kpi_date.strftime('%d-%b')})", value=f"{todays_volume:.2f} T")
     with kpi2: st.metric(label=f"Previous Day Volume ({previous_day.strftime('%d-%b')})", value=f"{yesterdays_volume:.2f} T")
     with kpi3: st.metric(label="Past 7 Days Volume", value=f"{past_7_days_volume:.2f} T", help=f"Total volume from {seven_day_start_date.strftime('%d-%b')} to {single_kpi_date.strftime('%d-%b')}")
     st.markdown("---")
     st.header("Detailed Performance View")
-    view_selection = st.radio("Choose a view for the table below:", ['Product Wise', 'Distributor Wise','ASE wise', 'SO Wise'], horizontal=True)
+
+    # --- NEW LOGIC TO DYNAMICALLY SHOW RADIO BUTTONS BASED ON ROLE ---
+    
+    # 1. Define all possible options
+    all_options = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'ASE wise', 'SO Wise']
+    
+    # 2. Determine which options this user should see
+    if user_role in ["SUPER_ADMIN", "ADMIN"]:
+        options_for_this_user = all_options # Super Admins and Admins see everything
+    elif user_role == "RGM":
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'ASE wise', 'SO Wise']
+    elif user_role == "DSM":
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'ASE wise', 'SO Wise']
+    elif user_role == "ASM":
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'ASE wise', 'SO Wise']
+    elif user_role == "SO":
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'SO Wise']
+    else:
+        # A default fallback for any other potential roles
+        options_for_this_user = ['Product Wise', 'Distributor Wise']
+
+    # 3. Create the radio button with the user-specific options
+    view_selection = st.radio(
+        "Choose a view for the table below:",
+        options_for_this_user,
+        horizontal=True
+    )
     if view_selection == 'Product Wise':
         st.subheader("Performance by Product Category")
-        prod_ctg_performance = df_filtered.groupby('Prod Ctg').agg(Total_Value=('Net Value', 'sum'), Total_Tonnes=('Qty in Ltrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('Cust Name', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        prod_ctg_performance = df_filtered.groupby('ProductCategory').agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Name', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
         prod_ctg_performance['Total_Value'] = prod_ctg_performance['Total_Value'].map('₹ {:,.0f}'.format)
         prod_ctg_performance['Total_Tonnes'] = prod_ctg_performance['Total_Tonnes'].map('{:.2f} T'.format)
         st.dataframe(prod_ctg_performance, use_container_width=True, hide_index=True)
     elif view_selection == 'Distributor Wise':
         st.subheader("Performance by Distributor")
-        db_performance = df_filtered.groupby(['Cust Code', 'Cust Name', 'City']).agg(Total_Value=('Net Value', 'sum'), Total_Tonnes=('Qty in Ltrs/Kgs', lambda x: x.sum() / 1000), Unique_Products_Purchased_ct=('Prod Ctg', 'nunique'), Unique_Products_Purchased=('Prod Ctg','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        db_performance = df_filtered.groupby(['BP Code', 'BP Name', 'City']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Unique_Products_Purchased_ct=('ProductCategory', 'nunique'), Unique_Products_Purchased=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
         db_performance['Total_Value'] = db_performance['Total_Value'].map('₹ {:,.0f}'.format)
         db_performance['Total_Tonnes'] = db_performance['Total_Tonnes'].map('{:.2f} T'.format)
         st.dataframe(db_performance, use_container_width=True, hide_index=True)
+    elif view_selection == 'DSM wise':
+        st.subheader("Performance by ASE")
+        DSM_performance = df_filtered.groupby(['DSM']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'unique'),Unique_Products_ct=('ProductCategory', 'nunique'), Unique_Products=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        DSM_performance['Total_Value'] = DSM_performance['Total_Value'].map('₹ {:,.0f}'.format)
+        DSM_performance['Total_Tonnes'] = DSM_performance['Total_Tonnes'].map('{:.2f} T'.format)
+        st.dataframe(DSM_performance, use_container_width=True, hide_index=True)
     elif view_selection == 'ASE wise':
         st.subheader("Performance by ASE")
-        ASE_performance = df_filtered.groupby(['ASM']).agg(Total_Value=('Net Value', 'sum'), Total_Tonnes=('Qty in Ltrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('Cust Code', 'unique'),Unique_Products_ct=('Prod Ctg', 'nunique'), Unique_Products=('Prod Ctg','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        ASE_performance = df_filtered.groupby(['ASM']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'unique'),Unique_Products_ct=('ProductCategory', 'nunique'), Unique_Products=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
         ASE_performance['Total_Value'] = ASE_performance['Total_Value'].map('₹ {:,.0f}'.format)
         ASE_performance['Total_Tonnes'] = ASE_performance['Total_Tonnes'].map('{:.2f} T'.format)
         st.dataframe(ASE_performance, use_container_width=True, hide_index=True)
+    
     elif view_selection == 'SO Wise':
         st.subheader("Performance by SO")
-        SO_performance = df_filtered.groupby(['SO','ASM','City']).agg(Total_Value=('Net Value', 'sum'), Total_Tonnes=('Qty in Ltrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('Cust Code', 'unique'),Unique_Products_ct=('Prod Ctg', 'nunique'), Unique_Products=('Prod Ctg','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        SO_performance = df_filtered.groupby(['SO','ASM','City']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'unique'),Unique_Products_ct=('ProductCategory', 'nunique'), Unique_Products=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
         SO_performance['Total_Value'] = SO_performance['Total_Value'].map('₹ {:,.0f}'.format)
         SO_performance['Total_Tonnes'] = SO_performance['Total_Tonnes'].map('{:.2f} T'.format)
         st.dataframe(SO_performance, use_container_width=True, hide_index=True)
