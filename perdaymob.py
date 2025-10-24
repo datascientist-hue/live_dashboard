@@ -411,7 +411,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
         st.dataframe(prod_ctg_performance, use_container_width=True, hide_index=True)
     elif view_selection == 'Distributor Wise':
         st.subheader("Performance by Distributor")
-        db_performance = df_filtered.groupby(['BP Code', 'BP Name', 'City']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Unique_Products_Purchased_ct=('ProductCategory', 'nunique'), Unique_Products_Purchased=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        db_performance = df_filtered.groupby(['BP Code', 'BP Name']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Unique_Products_Purchased_ct=('ProductCategory', 'nunique'), Unique_Products_Purchased=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
         db_performance['Total_Value'] = db_performance['Total_Value'].map('₹ {:,.0f}'.format)
         db_performance['Total_Tonnes'] = db_performance['Total_Tonnes'].map('{:.2f} T'.format)
         st.dataframe(db_performance, use_container_width=True, hide_index=True)
@@ -430,7 +430,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     
     elif view_selection == 'SO Wise':
         st.subheader("Performance by SO")
-        SO_performance = df_filtered.groupby(['SO','ASM','City']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'unique'),Unique_Products_ct=('ProductCategory', 'nunique'), Unique_Products=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        SO_performance = df_filtered.groupby(['SO','ASM']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'unique'),Unique_Products_ct=('ProductCategory', 'nunique'), Unique_Products=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
         SO_performance['Total_Value'] = SO_performance['Total_Value'].map('₹ {:,.0f}'.format)
         SO_performance['Total_Tonnes'] = SO_performance['Total_Tonnes'].map('{:.2f} T'.format)
         st.dataframe(SO_performance, use_container_width=True, hide_index=True)
