@@ -12,15 +12,11 @@ from zoneinfo import ZoneInfo # Required for timezone conversion
 import time
 import streamlit_authenticator as stauth
 
-
-
-
-
 # --- 1. APP CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Sales Dashboard")
 
 
-# --- 2. FTP-BASED HELPER FUNCTIONS FOR USER MANAGEMENT ---
+# --- 2. FTP-BASED HELPER FUNCTIONS FOR USER MANAGEMENT (NO CHANGE) ---
 
 def load_credentials_from_ftp():
     """Loads user data from the credentials.json file on the FTP server."""
@@ -67,7 +63,6 @@ def initialize_credentials_if_needed():
     """
     If credentials.json does not exist on the FTP, it creates one
     with a default superadmin user from Streamlit secrets.
-    --- CORRECTED to use the new streamlit-authenticator format ---
     """
     if load_credentials_from_ftp() is None:
         st.warning("`credentials.json` not found on FTP. A new file is being created with a Super Admin.")
@@ -78,7 +73,6 @@ def initialize_credentials_if_needed():
             st.error("FATAL ERROR: `initial_admin` password is not configured in Streamlit secrets. The app cannot start.")
             st.stop()
 
-        # --- FIX: Create credentials in the new format required by the library ---
         default_credentials = {
             "credentials": {
                 "usernames": {
@@ -93,7 +87,7 @@ def initialize_credentials_if_needed():
             },
             "cookie": {
                 "expiry_days": 30,
-                "key": "a_unique_and_random_secret_key", # This should be a random string
+                "key": "a_unique_and_random_secret_key", 
                 "name": "sales_dashboard_cookie"
             }
         }
@@ -105,73 +99,68 @@ def initialize_credentials_if_needed():
             st.error("FATAL ERROR: Could not create the credentials file on the FTP server.")
             st.stop()
 
-# --- 3. FTP-BASED DATA LOADING FUNCTION (UPDATED TO MAP CATEGORIES AND NEW HEADERS) ---
+# --- 3. FTP-BASED DATA LOADING FUNCTION (MODIFIED TO HANDLE NEW FILE STRUCTURE) ---
+
+def download_and_read_parquet_with_retry(ftp_connection, path, max_retries=3, delay=5):
+    """
+    Tries to download and read a parquet file with retries for race conditions.
+    """
+    for attempt in range(max_retries):
+        try:
+            in_memory_file = io.BytesIO()
+            ftp_connection.retrbinary(f"RETR {path}", in_memory_file.write)
+            
+            if in_memory_file.getbuffer().nbytes == 0:
+                st.warning(f"Warning: File at path '{path}' is empty (0 KB).")
+                return None
+
+            in_memory_file.seek(0)
+            df = pd.read_parquet(in_memory_file)
+            return df
+        
+        except Exception as e:
+            st.toast(f"Attempt {attempt + 1}/{max_retries} to read '{os.path.basename(path)}' failed. Retrying in {delay}s...", icon="⏳")
+            if attempt + 1 < max_retries:
+                time.sleep(delay)
+            else:
+                raise e
+    return None
+
+
 @st.cache_data(ttl=300)
 def load_main_data_from_ftp():
     """
-    Loads primary and category data from FTP, maps the updated product categories,
-    and filters for the LAST 45 DAYS for maximum speed.
-    Returns a tuple: (DataFrame, mod_time, error_message, status_message)
+    Loads primary data from FTP. The mapping logic has been REMOVED as the new 
+    primary file contains all necessary columns like 'upd_prod_ctg'.
     """
     modification_time_str = None
     status_msg = None
     try:
         ftp_creds = st.secrets["ftp"]
         
-        # Helper function to download a file from FTP
-        def download_file(ftp, path):
-            in_memory_file = io.BytesIO()
-            ftp.retrbinary(f"RETR {path}", in_memory_file.write)
-            in_memory_file.seek(0)
-            return in_memory_file
-
-        # Connect and download both files
         with FTP(ftp_creds['host']) as ftp:
             ftp.login(user=ftp_creds['user'], passwd=ftp_creds['password'])
             
-            # Get modification time for the main file
             try:
                 mdtm_response = ftp.sendcmd(f"MDTM {ftp_creds['primary_path']}")
                 modification_time_str = mdtm_response.split(' ')[1]
             except ftplib.all_errors:
                 pass
 
-            # Download primary sales data and category mapping data
-            primary_file_obj = download_file(ftp, ftp_creds['primary_path'])
-            category_file_obj = download_file(ftp, ftp_creds['category_path'])
+            # --- CHANGE: We now ONLY download and use the primary data file. ---
+            # The category mapping file is no longer needed for this logic.
+            df = download_and_read_parquet_with_retry(ftp, ftp_creds['primary_path'])
 
-        # Load both files into pandas DataFrames
-        df_primary = pd.read_parquet(primary_file_obj)
-        df_category_map = pd.read_parquet(category_file_obj)
-
-        # --- LOGIC TO MAP AND UPDATE PRODUCT CATEGORIES ---
-        # Assumption: Primary file has 'ProductCategory', mapping file has 'prod ctg' and 'upd_prod_ctg'.
-        if 'ProductCategory' in df_primary.columns and 'prod ctg' in df_category_map.columns and 'upd_prod_ctg' in df_category_map.columns:
-            
-            # --- FIX: Rename the column in the mapping file to match the primary file for merging ---
-            df_category_map.rename(columns={'prod ctg': 'ProductCategory'}, inplace=True)
-            
-            # Now, merge the main data with the category map using the common column 'ProductCategory'
-            df = pd.merge(df_primary, df_category_map, on='ProductCategory', how='left')
-            
-            # --- FIX: Use the correct column name 'upd_prod_ctg' from the mapping file ---
-            # Update the 'ProductCategory' column.
-            # If a new category exists in 'upd_prod_ctg', use it. Otherwise, keep the original 'ProductCategory'.
-            df['ProductCategory'] = df['upd_prod_ctg'].fillna(df['ProductCategory'])
-            
-            # --- FIX: Drop the correct column name 'upd_prod_ctg' ---
-            df.drop(columns=['upd_prod_ctg'], inplace=True)
-            
-        else:
-            # If the mapping can't be done, just use the primary data and show a warning
-            df = df_primary
-            st.warning("Could not map updated product categories. Check column names ('ProductCategory' in primary file; 'prod ctg', 'upd_prod_ctg' in category file).")
-        # --- END OF MAPPING LOGIC ---
-
+            if df is None:
+                return None, None, "Data Error: Could not load the main data file from FTP after multiple attempts. The file might be locked or empty.", None
+        
+        # --- CHANGE: REMOVED the old mapping logic block. ---
+        # The code now assumes 'upd_prod_ctg' and other columns exist directly in the df.
+        
         if 'InvDate' not in df.columns:
             return None, None, "Data Error: The column 'InvDate' was not found.", None
         
-        df['InvDate'] = pd.to_datetime(df['InvDate'], format='%d-%b-%y', errors='coerce')
+        df['InvDate'] = pd.to_datetime(df['InvDate'], format='%Y-%m-%d', errors='coerce')
         df.dropna(subset=['InvDate'], inplace=True)
 
         today = pd.to_datetime(datetime.now().date())
@@ -179,31 +168,32 @@ def load_main_data_from_ftp():
         df = df[df['InvDate'] >= start_date_filter].copy()
         status_msg = "Showing data from the last 45 days for faster performance."
 
-        numeric_cols = ['PrimaryQtyInLtrs/Kgs', 'PrimaryLineTotalBeforeTax']
+        numeric_cols = ['PrimaryQtyInLtrs/Kgs', 'PrimaryLineTotalBeforeTax', 'PrimaryQtyinNos', 'PrimaryQtyinCases/Bags']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
-        key_cols = ['ASM', 'RGM', 'DSM', 'SO', 'ProductCategory', 'BP Name', 'JCPeriodNum', 'CustomerClass']
+        
+        # --- CHANGE: Added new columns from your list to the cleaning process ---
+        key_cols = ['ASM', 'RGM', 'DSM', 'SO', 'ProductCategory', 'BP Name', 'CustomerClass', 
+                    'DocumentType', 'WhsCode', 'CustType', 'Brand', 'ProductGroup', 'upd_prod_ctg'] # Added new columns
         for col in key_cols:
             if col in df.columns:
-                df[col].fillna('Unknown', inplace=True)
+                df[col] = df[col].fillna('Unknown')
         
         return df, modification_time_str, None, status_msg
 
     except ftplib.all_errors as e:
-        error_msg = f"FTP Error: Could not find the data file. Please check the path. Details: {e}"
+        error_msg = f"FTP Error: Could not connect or find the data file. Please check the path and credentials. Details: {e}"
         return None, None, error_msg, None
     except Exception as e:
-        error_msg = f"Error loading main data: {e}"
+        error_msg = f"Error after retries: Failed to load data from FTP. Details: {e}"
         return None, None, error_msg, None
 
-# --- 4. UI FUNCTIONS (FULLY CORRECTED) ---
+# --- 4. UI FUNCTIONS (Minor change in 'Product Wise' view) ---
 
 def user_management_ui(credentials, df):
     """UI for the Super Admin to manage users - with Add and Edit forms."""
     st.subheader("👤 User Management")
-
-    # --- FIX: This is the dictionary that now contains the user data ---
     user_dict = credentials['credentials']['usernames']
 
     st.write("Existing Users:")
@@ -237,13 +227,11 @@ def user_management_ui(credentials, df):
             if st.form_submit_button("Add User"):
                 if not all([new_username, new_name, new_password, new_role]):
                     st.error("Please fill all fields for the new user.")
-                # FIX: Check for username in the correct dictionary
                 elif new_username in user_dict:
                     st.error(f"Username '{new_username}' already exists. Please choose a different one.")
                 else:
-                    # FIX: Add the new user to the correct dictionary
                     user_dict[new_username] = {
-                        "email": f"{new_username}@example.com", # Added email for compatibility
+                        "email": f"{new_username}@example.com",
                         "name": new_name,
                         "password": hash_password(new_password),
                         "role": new_role,
@@ -254,7 +242,6 @@ def user_management_ui(credentials, df):
                         st.rerun()
 
     with st.expander("✏️ Edit Existing User", expanded=True):
-        # FIX: Get options from the correct dictionary
         user_to_edit = st.selectbox(
             "Select User to Edit", 
             options=[u for u in user_dict.keys() if u != "superadmin"],
@@ -262,7 +249,6 @@ def user_management_ui(credentials, df):
             placeholder="Choose a user..."
         )
         if user_to_edit:
-            # FIX: Get data from the correct dictionary
             user_data = user_dict[user_to_edit]
             with st.form("edit_user_form"):
                 st.write(f"Now editing user: **{user_to_edit}**")
@@ -304,7 +290,6 @@ def user_management_ui(credentials, df):
                         st.write("No filter needed for ADMIN role.")
 
                 if st.form_submit_button("Save Changes"):
-                    # FIX: Update the correct dictionary
                     user_dict[user_to_edit]["name"] = edited_name
                     user_dict[user_to_edit]["role"] = edited_role
                     user_dict[user_to_edit]["filter_value"] = edited_filter_value
@@ -316,10 +301,8 @@ def user_management_ui(credentials, df):
 
     with st.expander("➖ Delete User", expanded=False):
          with st.form("delete_form", clear_on_submit=True):
-            # FIX: Get options from the correct dictionary
             user_to_delete = st.selectbox("Select User to Delete", options=[u for u in user_dict.keys() if u not in ["superadmin"]], key="delete_select")
             if st.form_submit_button("Delete User"):
-                # FIX: Delete from the correct dictionary
                 if user_to_delete in user_dict:
                     del user_dict[user_to_delete]
                     if save_credentials_to_ftp(credentials):
@@ -329,7 +312,6 @@ def user_management_ui(credentials, df):
 def main_dashboard_ui(df, user_role, user_filter_value):
     """This is the main dashboard UI that is visible to everyone."""
     
-    # --- FIX: Corrected syntax error: df['ASM'] .isin -> df['ASM'].isin ---
     if user_role == "RGM": df = df[df['RGM'] == user_filter_value].copy()
     elif user_role == "DSM": df = df[df['DSM'] == user_filter_value].copy()
     elif user_role == "ASM": df = df[df['ASM'].isin(user_filter_value)].copy()
@@ -398,15 +380,11 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     with kpi3: st.metric(label="Past 7 Days Volume", value=f"{past_7_days_volume:.2f} T", help=f"Total volume from {seven_day_start_date.strftime('%d-%b')} to {single_kpi_date.strftime('%d-%b')}")
     st.markdown("---")
     st.header("Detailed Performance View")
-
-    # --- NEW LOGIC TO DYNAMICALLY SHOW RADIO BUTTONS BASED ON ROLE ---
     
-    # 1. Define all possible options
     all_options = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'ASE wise', 'SO Wise']
     
-    # 2. Determine which options this user should see
     if user_role in ["SUPER_ADMIN", "ADMIN"]:
-        options_for_this_user = all_options # Super Admins and Admins see everything
+        options_for_this_user = all_options
     elif user_role == "RGM":
         options_for_this_user = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'ASE wise', 'SO Wise']
     elif user_role == "DSM":
@@ -416,10 +394,8 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     elif user_role == "SO":
         options_for_this_user = ['Product Wise', 'Distributor Wise', 'SO Wise']
     else:
-        # A default fallback for any other potential roles
         options_for_this_user = ['Product Wise', 'Distributor Wise']
 
-    # 3. Create the radio button with the user-specific options
     view_selection = st.radio(
         "Choose a view for the table below:",
         options_for_this_user,
@@ -427,7 +403,9 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     )
     if view_selection == 'Product Wise':
         st.subheader("Performance by Product Category")
-        prod_ctg_performance = df_filtered.groupby('ProductCategory').agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Name', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        # --- CHANGE: Added 'upd_prod_ctg' to the groupby to show the new category ---
+        group_cols = ['ProductCategory', 'upd_prod_ctg'] if 'upd_prod_ctg' in df_filtered.columns else ['ProductCategory']
+        prod_ctg_performance = df_filtered.groupby(group_cols).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Name', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
         prod_ctg_performance['Total_Value'] = prod_ctg_performance['Total_Value'].map('₹ {:,.0f}'.format)
         prod_ctg_performance['Total_Tonnes'] = prod_ctg_performance['Total_Tonnes'].map('{:.2f} T'.format)
         st.dataframe(prod_ctg_performance, use_container_width=True, hide_index=True)
@@ -457,7 +435,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
         SO_performance['Total_Tonnes'] = SO_performance['Total_Tonnes'].map('{:.2f} T'.format)
         st.dataframe(SO_performance, use_container_width=True, hide_index=True)
 
-# --- 5. AUTHENTICATION & PAGE ROUTING (UPGRADED AND FULLY CORRECTED) ---
+# --- 5. AUTHENTICATION & PAGE ROUTING (NO CHANGE) ---
 
 if "ftp" not in st.secrets:
     st.error("FTP credentials are not configured in Streamlit secrets. The app cannot start.")
