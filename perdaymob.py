@@ -270,8 +270,13 @@ def user_management_ui(credentials, df):
                         edited_filter_value = st.selectbox("Select RGM Name", options=rgm_options, index=current_filter_index, key="edit_rgm")
                     elif edited_role == "DSM":
                         dsm_options = sorted(df['DSM'].unique())
-                        current_filter_index = dsm_options.index(edited_filter_value) if edited_filter_value in dsm_options else 0
-                        edited_filter_value = st.selectbox("Select DSM Name", options=dsm_options, index=current_filter_index, key="edit_dsm")
+                        current_selection = user_data.get("filter_value")
+                        default_selection = []
+                        if isinstance(current_selection, list):
+                            default_selection = [dsm for dsm in current_selection if dsm in dsm_options]
+                        elif current_selection in dsm_options:
+                             default_selection = [current_selection]
+                        edited_filter_value = st.multiselect("Select DSM Name(s)", options=dsm_options, default=default_selection, key="edit_dsm")
                     elif edited_role == "ASM":
                         asm_options = sorted(df['ASM'].unique())
                         current_selection = user_data.get("filter_value")
