@@ -99,7 +99,7 @@ def initialize_credentials_if_needed():
             st.error("FATAL ERROR: Could not create the credentials file on the FTP server.")
             st.stop()
 
-# --- 3. FTP-BASED DATA LOADING FUNCTION (MODIFIED TO HANDLE NEW FILE STRUCTURE) ---
+# --- 3. FTP-BASED DATA LOADING FUNCTION ---
 
 def download_and_read_parquet_with_retry(ftp_connection, path, max_retries=3, delay=5):
     """
@@ -130,8 +130,7 @@ def download_and_read_parquet_with_retry(ftp_connection, path, max_retries=3, de
 @st.cache_data(ttl=300)
 def load_main_data_from_ftp():
     """
-    Loads primary data from FTP. The mapping logic has been REMOVED as the new 
-    primary file contains all necessary columns like 'upd_prod_ctg'.
+    Loads primary data from FTP.
     """
     modification_time_str = None
     status_msg = None
@@ -147,15 +146,10 @@ def load_main_data_from_ftp():
             except ftplib.all_errors:
                 pass
 
-            # --- CHANGE: We now ONLY download and use the primary data file. ---
-            # The category mapping file is no longer needed for this logic.
             df = download_and_read_parquet_with_retry(ftp, ftp_creds['primary_path'])
 
             if df is None:
                 return None, None, "Data Error: Could not load the main data file from FTP after multiple attempts. The file might be locked or empty.", None
-        
-        # --- CHANGE: REMOVED the old mapping logic block. ---
-        # The code now assumes 'upd_prod_ctg' and other columns exist directly in the df.
         
         if 'InvDate' not in df.columns:
             return None, None, "Data Error: The column 'InvDate' was not found.", None
@@ -163,25 +157,22 @@ def load_main_data_from_ftp():
         df['InvDate'] = pd.to_datetime(df['InvDate'], format='%Y-%m-%d', errors='coerce')
         df.dropna(subset=['InvDate'], inplace=True)
 
-        today = pd.to_datetime(datetime.now().date())
-        start_date_filter = today - timedelta(days=45)
-        df = df[df['InvDate'] >= start_date_filter].copy()
-        status_msg = "Showing data from the last 45 days for faster performance."
-
+        # 45-day filter removed as per your last code version
+        
         numeric_cols = ['PrimaryQtyInLtrs/Kgs', 'PrimaryLineTotalBeforeTax', 'PrimaryQtyinNos', 'PrimaryQtyinCases/Bags']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
         
-        # --- CHANGE: Added new columns from your list to the cleaning process ---
+        # --- CHANGE: Added JCPeriodNum to the cleaning process ---
         key_cols = ['ASM', 'RGM', 'DSM', 'SO', 'ProductCategory', 'BP Name', 'CustomerClass', 
-                    'DocumentType', 'WhsCode', 'CustType', 'Brand', 'ProductGroup', 'upd_prod_ctg'] # Added new columns
+                    'DocumentType', 'WhsCode', 'CustType', 'Brand', 'ProductGroup', 'upd_prod_ctg', 'JCPeriodNum']
         for col in key_cols:
             if col in df.columns:
                 df[col] = df[col].fillna('Unknown')
         
         return df, modification_time_str, None, status_msg
-
+ 
     except ftplib.all_errors as e:
         error_msg = f"FTP Error: Could not connect or find the data file. Please check the path and credentials. Details: {e}"
         return None, None, error_msg, None
@@ -189,7 +180,7 @@ def load_main_data_from_ftp():
         error_msg = f"Error after retries: Failed to load data from FTP. Details: {e}"
         return None, None, error_msg, None
 
-# --- 4. UI FUNCTIONS (Minor change in 'Product Wise' view) ---
+# --- 4. UI FUNCTIONS ---
 
 def user_management_ui(credentials, df):
     """UI for the Super Admin to manage users - with Add and Edit forms."""
@@ -215,10 +206,11 @@ def user_management_ui(credentials, df):
                 new_filter_value = None
                 if new_role == "RGM":
                     new_filter_value = st.selectbox("Select RGM Name", options=sorted(df['RGM'].unique()), key="add_rgm")
+                # --- FIX: Changed to multiselect for consistency with filtering logic ---
                 elif new_role == "DSM":
-                    new_filter_value = st.selectbox("Select DSM Name", options=sorted(df['DSM'].unique()), key="add_dsm")
+                    new_filter_value = st.multiselect("Select DSM Name(s)", options=sorted(df['DSM'].unique()), key="add_dsm")
                 elif new_role == "ASM":
-                    new_filter_value = st.selectbox("Select ASM Name", options=sorted(df['ASM'].unique()), key="add_Asm")
+                    new_filter_value = st.multiselect("Select ASM Name(s)", options=sorted(df['ASM'].unique()), key="add_asm")
                 elif new_role == "SO":
                     new_filter_value = st.selectbox("Select SO Name", options=sorted(df['SO'].unique()), key="add_so")
                 else:
@@ -317,28 +309,26 @@ def user_management_ui(credentials, df):
 def main_dashboard_ui(df, user_role, user_filter_value):
     """This is the main dashboard UI that is visible to everyone."""
 
-    # --- FIX: ROBUST FILTERING LOGIC ---
-    # This ensures the filter value is always a list for roles that use .isin()
-    # It handles legacy users who might have a string value instead of a list.
+    # Ensures the filter value is always a list for roles that use .isin()
     if user_role in ["DSM", "ASM"] and isinstance(user_filter_value, str):
         user_filter_value = [user_filter_value]
 
-    # The filtering logic now works safely for both old and new users
+    # Apply the primary role-based filter
     if user_role == "RGM": df = df[df['RGM'] == user_filter_value].copy()
     elif user_role == "DSM": df = df[df['DSM'].isin(user_filter_value)].copy()
     elif user_role == "ASM": df = df[df['ASM'].isin(user_filter_value)].copy()
     elif user_role == "SO": df = df[df['SO'] == user_filter_value].copy()
     
     if df.empty:
-        st.warning(f"No data available in the last 45 days for your access level ('{user_filter_value}').")
+        st.warning(f"No data available for your access level ('{user_filter_value}').")
         return
     
+    # --- CORRECTED AND REORDERED FILTERING LOGIC ---
     st.sidebar.title("Filters")
-    min_date, max_date = df['InvDate'].min().date(), df['InvDate'].max().date()
-    start_date, end_date = st.sidebar.date_input("Select a Date Range", value=(max_date, max_date), min_value=min_date, max_value=max_date)
     
     df_hierarchical_filtered = df.copy()
 
+    # Apply all hierarchical filters first, before the date filter
     if user_role in ["SUPER_ADMIN", "ADMIN"]:
         if selected_rgm := st.sidebar.multiselect("Filter by RGM", sorted(df_hierarchical_filtered['RGM'].unique())): 
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['RGM'].isin(selected_rgm)]
@@ -355,14 +345,40 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     if selected_so := st.sidebar.multiselect("Filter by SO", sorted(df_hierarchical_filtered['SO'].unique())): 
         df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['SO'].isin(selected_so)]
 
-    df_filtered = df_hierarchical_filtered[(df_hierarchical_filtered['InvDate'].dt.date >= start_date) & (df_hierarchical_filtered['InvDate'].dt.date <= end_date)].copy()
+    if 'JCPeriodNum' in df_hierarchical_filtered.columns:
+        if selected_jc := st.sidebar.multiselect("Filter by JC", sorted(df_hierarchical_filtered['JCPeriodNum'].unique())):
+            df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['JCPeriodNum'].isin(selected_jc)]
+    
+    # --- LOGIC FOR OPTIONAL DATE FILTER ---
+    st.sidebar.markdown("---")
+    min_date, max_date = df_hierarchical_filtered['InvDate'].min().date(), df_hierarchical_filtered['InvDate'].max().date()
+    start_date_display, end_date_display = min_date, max_date
+    
+    filter_by_date = st.sidebar.checkbox("Filter by Date", value=True)
+
+    if filter_by_date:
+        start_date, end_date = st.sidebar.date_input(
+            "Select a Date Range", 
+            value=(max_date, max_date), 
+            min_value=min_date, 
+            max_value=max_date
+        )
+        start_date_display, end_date_display = start_date, end_date
+        df_filtered = df_hierarchical_filtered[
+            (df_hierarchical_filtered['InvDate'].dt.date >= start_date) & 
+            (df_hierarchical_filtered['InvDate'].dt.date <= end_date)
+        ].copy()
+    else:
+        df_filtered = df_hierarchical_filtered.copy()
+        st.sidebar.info("Showing data for all available dates.")
     
     if df_filtered.empty:
         st.warning("No sales data available for the selected filters.")
         return
 
     st.markdown("---")
-    st.header(f"Snapshot for {start_date.strftime('%d-%b-%Y')} to {end_date.strftime('%d-%b-%Y')}")
+    st.header(f"Snapshot for {start_date_display.strftime('%d-%b-%Y')} to {end_date_display.strftime('%d-%b-%Y')}")
+
     summary_total_net_Volume = df_filtered['PrimaryQtyInLtrs/Kgs'].sum() / 1000
     summary_total_net_value = df_filtered['PrimaryLineTotalBeforeTax'].sum()
     summary_unique_invoices = df_filtered['InvNum'].nunique()
@@ -376,8 +392,9 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     col4.metric(label="Distributors Billed", value=f"{summary_unique_dbs}")
     col5.metric(label="Total Volume", value=f"{summary_total_net_Volume:,.2f}MT")
     st.markdown("---")
+
     st.header("Volume Comparison")
-    single_kpi_date = end_date
+    single_kpi_date = end_date_display 
     df_today = df_hierarchical_filtered[df_hierarchical_filtered['InvDate'].dt.date == single_kpi_date]
     todays_volume = df_today['PrimaryQtyInLtrs/Kgs'].sum() / 1000
     previous_day = single_kpi_date - timedelta(days=1)
@@ -391,18 +408,21 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     with kpi2: st.metric(label=f"Previous Day Volume ({previous_day.strftime('%d-%b')})", value=f"{yesterdays_volume:.2f} T")
     with kpi3: st.metric(label="Past 7 Days Volume", value=f"{past_7_days_volume:.2f} T", help=f"Total volume from {seven_day_start_date.strftime('%d-%b')} to {single_kpi_date.strftime('%d-%b')}")
     st.markdown("---")
+
     st.header("Detailed Performance View")
     
-    all_options = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'ASE wise', 'SO Wise']
+    # --- FIX: Standardized 'ASE wise' to 'ASM wise' for clarity ---
+    all_options = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'SO Wise']
     
+    # FIX: Corrected the options available to each user role
     if user_role in ["SUPER_ADMIN", "ADMIN"]:
         options_for_this_user = all_options
     elif user_role == "RGM":
-        options_for_this_user = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'ASE wise', 'SO Wise']
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'SO Wise']
     elif user_role == "DSM":
-        options_for_this_user = ['Product Wise', 'Distributor Wise', 'ASE wise', 'SO Wise']
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'ASM wise', 'SO Wise']
     elif user_role == "ASM":
-        options_for_this_user = ['Product Wise', 'Distributor Wise', 'ASE wise', 'SO Wise']
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'SO Wise']
     elif user_role == "SO":
         options_for_this_user = ['Product Wise', 'Distributor Wise', 'SO Wise']
     else:
@@ -415,7 +435,6 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     )
     if view_selection == 'Product Wise':
         st.subheader("Performance by Product Category")
-        # --- CHANGE: Added 'upd_prod_ctg' to the groupby to show the new category ---
         group_cols = ['ProductCategory', 'upd_prod_ctg'] if 'upd_prod_ctg' in df_filtered.columns else ['ProductCategory']
         prod_ctg_performance = df_filtered.groupby(group_cols).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Name', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
         prod_ctg_performance['Total_Value'] = prod_ctg_performance['Total_Value'].map('₹ {:,.0f}'.format)
@@ -428,17 +447,17 @@ def main_dashboard_ui(df, user_role, user_filter_value):
         db_performance['Total_Tonnes'] = db_performance['Total_Tonnes'].map('{:.2f} T'.format)
         st.dataframe(db_performance, use_container_width=True, hide_index=True)
     elif view_selection == 'DSM wise':
-        st.subheader("Performance by ASE")
+        st.subheader("Performance by DSM")
         DSM_performance = df_filtered.groupby(['DSM']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'unique'),Unique_Products_ct=('ProductCategory', 'nunique'), Unique_Products=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
         DSM_performance['Total_Value'] = DSM_performance['Total_Value'].map('₹ {:,.0f}'.format)
         DSM_performance['Total_Tonnes'] = DSM_performance['Total_Tonnes'].map('{:.2f} T'.format)
         st.dataframe(DSM_performance, use_container_width=True, hide_index=True)
-    elif view_selection == 'ASE wise':
-        st.subheader("Performance by ASE")
-        ASE_performance = df_filtered.groupby(['ASM']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'unique'),Unique_Products_ct=('ProductCategory', 'nunique'), Unique_Products=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
-        ASE_performance['Total_Value'] = ASE_performance['Total_Value'].map('₹ {:,.0f}'.format)
-        ASE_performance['Total_Tonnes'] = ASE_performance['Total_Tonnes'].map('{:.2f} T'.format)
-        st.dataframe(ASE_performance, use_container_width=True, hide_index=True)
+    elif view_selection == 'ASM wise':
+        st.subheader("Performance by ASM")
+        ASM_performance = df_filtered.groupby(['ASM']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'unique'),Unique_Products_ct=('ProductCategory', 'nunique'), Unique_Products=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        ASM_performance['Total_Value'] = ASM_performance['Total_Value'].map('₹ {:,.0f}'.format)
+        ASM_performance['Total_Tonnes'] = ASM_performance['Total_Tonnes'].map('{:.2f} T'.format)
+        st.dataframe(ASM_performance, use_container_width=True, hide_index=True)
     
     elif view_selection == 'SO Wise':
         st.subheader("Performance by SO")
