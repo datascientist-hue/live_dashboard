@@ -316,7 +316,14 @@ def user_management_ui(credentials, df):
 
 def main_dashboard_ui(df, user_role, user_filter_value):
     """This is the main dashboard UI that is visible to everyone."""
-    
+
+    # --- FIX: ROBUST FILTERING LOGIC ---
+    # This ensures the filter value is always a list for roles that use .isin()
+    # It handles legacy users who might have a string value instead of a list.
+    if user_role in ["DSM", "ASM"] and isinstance(user_filter_value, str):
+        user_filter_value = [user_filter_value]
+
+    # The filtering logic now works safely for both old and new users
     if user_role == "RGM": df = df[df['RGM'] == user_filter_value].copy()
     elif user_role == "DSM": df = df[df['DSM'].isin(user_filter_value)].copy()
     elif user_role == "ASM": df = df[df['ASM'].isin(user_filter_value)].copy()
@@ -325,7 +332,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     if df.empty:
         st.warning(f"No data available in the last 45 days for your access level ('{user_filter_value}').")
         return
-
+    
     st.sidebar.title("Filters")
     min_date, max_date = df['InvDate'].min().date(), df['InvDate'].max().date()
     start_date, end_date = st.sidebar.date_input("Select a Date Range", value=(max_date, max_date), min_value=min_date, max_value=max_date)
@@ -335,7 +342,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     if user_role in ["SUPER_ADMIN", "ADMIN"]:
         if selected_rgm := st.sidebar.multiselect("Filter by RGM", sorted(df_hierarchical_filtered['RGM'].unique())): 
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['RGM'].isin(selected_rgm)]
-    if user_role in ["SUPER_ADMIN", "ADMIN", "RGM"]:
+    if user_role in ["SUPER_ADMIN", "ADMIN", "RGM","DSM"]:
         if selected_dsm := st.sidebar.multiselect("Filter by DSM", sorted(df_hierarchical_filtered['DSM'].unique())): 
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['DSM'].isin(selected_dsm)]
     if user_role in ["SUPER_ADMIN", "ADMIN", "RGM", "DSM"]:
