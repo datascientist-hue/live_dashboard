@@ -156,15 +156,12 @@ def load_main_data_from_ftp():
         
         df['InvDate'] = pd.to_datetime(df['InvDate'], format='%Y-%m-%d', errors='coerce')
         df.dropna(subset=['InvDate'], inplace=True)
-
-        # 45-day filter removed as per your last code version
         
         numeric_cols = ['PrimaryQtyInLtrs/Kgs', 'PrimaryLineTotalBeforeTax', 'PrimaryQtyinNos', 'PrimaryQtyinCases/Bags']
         for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
         
-        # --- CHANGE: Added JCPeriodNum to the cleaning process ---
         key_cols = ['ASM', 'RGM', 'DSM', 'SO', 'ProductCategory', 'BP Name', 'CustomerClass', 
                     'DocumentType', 'WhsCode', 'CustType', 'Brand', 'ProductGroup', 'upd_prod_ctg', 'JCPeriodNum']
         for col in key_cols:
@@ -206,7 +203,6 @@ def user_management_ui(credentials, df):
                 new_filter_value = None
                 if new_role == "RGM":
                     new_filter_value = st.selectbox("Select RGM Name", options=sorted(df['RGM'].unique()), key="add_rgm")
-                # --- FIX: Changed to multiselect for consistency with filtering logic ---
                 elif new_role == "DSM":
                     new_filter_value = st.multiselect("Select DSM Name(s)", options=sorted(df['DSM'].unique()), key="add_dsm")
                 elif new_role == "ASM":
@@ -306,14 +302,28 @@ def user_management_ui(credentials, df):
                         st.success(f"User '{user_to_delete}' deleted!")
                         st.rerun()
 
+def format_indian_currency(num):
+    """Formats a number into Indian currency style (K, L, Cr)."""
+    if not isinstance(num, (int, float)):
+        return num
+    
+    if num >= 1_00_00_000:
+        val = f"{num / 1_00_00_000:.2f} Cr"
+    elif num >= 1_00_000:
+        val = f"{num / 1_00_000:.2f} L"
+    elif num >= 1_000:
+        val = f"{num / 1_000:.1f} K"
+    else:
+        val = f"{num:,.0f}"
+        
+    return "₹ " + val
+
 def main_dashboard_ui(df, user_role, user_filter_value):
     """This is the main dashboard UI that is visible to everyone."""
 
-    # Ensures the filter value is always a list for roles that use .isin()
     if user_role in ["DSM", "ASM"] and isinstance(user_filter_value, str):
         user_filter_value = [user_filter_value]
 
-    # Apply the primary role-based filter
     if user_role == "RGM": df = df[df['RGM'] == user_filter_value].copy()
     elif user_role == "DSM": df = df[df['DSM'].isin(user_filter_value)].copy()
     elif user_role == "ASM": df = df[df['ASM'].isin(user_filter_value)].copy()
@@ -323,12 +333,10 @@ def main_dashboard_ui(df, user_role, user_filter_value):
         st.warning(f"No data available for your access level ('{user_filter_value}').")
         return
     
-    # --- CORRECTED AND REORDERED FILTERING LOGIC ---
     st.sidebar.title("Filters")
     
     df_hierarchical_filtered = df.copy()
 
-    # Apply all hierarchical filters first, before the date filter
     if user_role in ["SUPER_ADMIN", "ADMIN"]:
         if selected_rgm := st.sidebar.multiselect("Filter by RGM", sorted(df_hierarchical_filtered['RGM'].unique())): 
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['RGM'].isin(selected_rgm)]
@@ -349,7 +357,6 @@ def main_dashboard_ui(df, user_role, user_filter_value):
         if selected_jc := st.sidebar.multiselect("Filter by JC", sorted(df_hierarchical_filtered['JCPeriodNum'].unique())):
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['JCPeriodNum'].isin(selected_jc)]
     
-    # --- LOGIC FOR OPTIONAL DATE FILTER ---
     st.sidebar.markdown("---")
     min_date, max_date = df_hierarchical_filtered['InvDate'].min().date(), df_hierarchical_filtered['InvDate'].max().date()
     start_date_display, end_date_display = min_date, max_date
@@ -386,7 +393,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     Unique_prod_ctg = df_filtered['ProductCategory'].nunique()
     col1, col2, col3 = st.columns(3)
     col1.metric(label="Unique Prod Ctg", value=f"{Unique_prod_ctg}")
-    col2.metric(label="Total Net Value", value=f"₹ {summary_total_net_value:,.0f}")
+    col2.metric(label="Total Net Value", value=format_indian_currency(summary_total_net_value))
     col3.metric(label="Invoices Billed", value=f"{summary_unique_invoices}")
     col4, col5 = st.columns(2)
     col4.metric(label="Distributors Billed", value=f"{summary_unique_dbs}")
@@ -411,10 +418,8 @@ def main_dashboard_ui(df, user_role, user_filter_value):
 
     st.header("Detailed Performance View")
     
-    # --- FIX: Standardized 'ASE wise' to 'ASM wise' for clarity ---
     all_options = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'SO Wise']
     
-    # FIX: Corrected the options available to each user role
     if user_role in ["SUPER_ADMIN", "ADMIN"]:
         options_for_this_user = all_options
     elif user_role == "RGM":
@@ -437,32 +442,32 @@ def main_dashboard_ui(df, user_role, user_filter_value):
         st.subheader("Performance by Product Category")
         group_cols = ['ProductCategory', 'upd_prod_ctg'] if 'upd_prod_ctg' in df_filtered.columns else ['ProductCategory']
         prod_ctg_performance = df_filtered.groupby(group_cols).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Name', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
-        prod_ctg_performance['Total_Value'] = prod_ctg_performance['Total_Value'].map('₹ {:,.0f}'.format)
+        prod_ctg_performance['Total_Value'] = prod_ctg_performance['Total_Value'].apply(format_indian_currency)
         prod_ctg_performance['Total_Tonnes'] = prod_ctg_performance['Total_Tonnes'].map('{:.2f} T'.format)
         st.dataframe(prod_ctg_performance, use_container_width=True, hide_index=True)
     elif view_selection == 'Distributor Wise':
         st.subheader("Performance by Distributor")
         db_performance = df_filtered.groupby(['BP Code', 'BP Name']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Unique_Products_Purchased_ct=('ProductCategory', 'nunique'), Unique_Products_Purchased=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
-        db_performance['Total_Value'] = db_performance['Total_Value'].map('₹ {:,.0f}'.format)
+        db_performance['Total_Value'] = db_performance['Total_Value'].apply(format_indian_currency)
         db_performance['Total_Tonnes'] = db_performance['Total_Tonnes'].map('{:.2f} T'.format)
         st.dataframe(db_performance, use_container_width=True, hide_index=True)
     elif view_selection == 'DSM wise':
         st.subheader("Performance by DSM")
         DSM_performance = df_filtered.groupby(['DSM']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'unique'),Unique_Products_ct=('ProductCategory', 'nunique'), Unique_Products=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
-        DSM_performance['Total_Value'] = DSM_performance['Total_Value'].map('₹ {:,.0f}'.format)
+        DSM_performance['Total_Value'] = DSM_performance['Total_Value'].apply(format_indian_currency)
         DSM_performance['Total_Tonnes'] = DSM_performance['Total_Tonnes'].map('{:.2f} T'.format)
         st.dataframe(DSM_performance, use_container_width=True, hide_index=True)
     elif view_selection == 'ASM wise':
         st.subheader("Performance by ASM")
         ASM_performance = df_filtered.groupby(['ASM']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'unique'),Unique_Products_ct=('ProductCategory', 'nunique'), Unique_Products=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
-        ASM_performance['Total_Value'] = ASM_performance['Total_Value'].map('₹ {:,.0f}'.format)
+        ASM_performance['Total_Value'] = ASM_performance['Total_Value'].apply(format_indian_currency)
         ASM_performance['Total_Tonnes'] = ASM_performance['Total_Tonnes'].map('{:.2f} T'.format)
         st.dataframe(ASM_performance, use_container_width=True, hide_index=True)
     
     elif view_selection == 'SO Wise':
         st.subheader("Performance by SO")
         SO_performance = df_filtered.groupby(['SO','ASM']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'unique'),Unique_Products_ct=('ProductCategory', 'nunique'), Unique_Products=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
-        SO_performance['Total_Value'] = SO_performance['Total_Value'].map('₹ {:,.0f}'.format)
+        SO_performance['Total_Value'] = SO_performance['Total_Value'].apply(format_indian_currency)
         SO_performance['Total_Tonnes'] = SO_performance['Total_Tonnes'].map('{:.2f} T'.format)
         st.dataframe(SO_performance, use_container_width=True, hide_index=True)
 
