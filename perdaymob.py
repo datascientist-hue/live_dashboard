@@ -318,7 +318,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     """This is the main dashboard UI that is visible to everyone."""
     
     if user_role == "RGM": df = df[df['RGM'] == user_filter_value].copy()
-    elif user_role == "DSM": df = df[df['DSM'] == user_filter_value].copy()
+    elif user_role == "DSM": df = df[df['DSM'].isin(user_filter_value)].copy()
     elif user_role == "ASM": df = df[df['ASM'].isin(user_filter_value)].copy()
     elif user_role == "SO": df = df[df['SO'] == user_filter_value].copy()
     
