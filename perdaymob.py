@@ -11,12 +11,13 @@ import io  # Required to handle files in memory
 from zoneinfo import ZoneInfo # Required for timezone conversion
 import time
 import streamlit_authenticator as stauth
+from urllib.parse import quote # Required for WhatsApp sharing URL
 
 # --- 1. APP CONFIGURATION ---
 st.set_page_config(layout="wide", page_title="Sales Dashboard")
 
 
-# --- 2. FTP-BASED HELPER FUNCTIONS FOR USER MANAGEMENT (NO CHANGE) ---
+# --- 2. FTP-BASED HELPER FUNCTIONS FOR USER MANAGEMENT ---
 
 def load_credentials_from_ftp():
     """Loads user data from the credentials.json file on the FTP server."""
@@ -127,7 +128,7 @@ def download_and_read_parquet_with_retry(ftp_connection, path, max_retries=3, de
     return None
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=120)
 def load_main_data_from_ftp():
     """
     Loads primary data from FTP.
@@ -318,7 +319,39 @@ def format_indian_currency(num):
         
     return "₹ " + val
 
-def main_dashboard_ui(df, user_role, user_filter_value):
+# --- MODIFICATION 1: Update function to accept mod_time ---
+def format_df_for_whatsapp(df, title, date_range_str, mod_time):
+    """Formats an entire DataFrame into a WhatsApp-friendly string."""
+    
+    # Format the timestamp for WhatsApp message
+    formatted_time = ""
+    if mod_time:
+        try:
+            utc_time = datetime.strptime(mod_time, '%Y%m%d%H%M%S').replace(tzinfo=ZoneInfo("UTC"))
+            ist_time = utc_time.astimezone(ZoneInfo("Asia/Kolkata"))
+            formatted_time = ist_time.strftime("%d %b %Y, %I:%M:%S %p IST")
+            # Create the refresh date string to be added to the message
+            formatted_time = f"_Data Last Refreshed: {formatted_time}_"
+        except Exception:
+            formatted_time = "" # Fallback in case of an error
+
+    # Assemble the message parts
+    msg_parts = [f"*{title}*", f"_{date_range_str}_"]
+    if formatted_time:
+        msg_parts.append(formatted_time) # Add the refresh time string here
+    
+    msg_parts.append("--------------------")
+
+    for index, row in df.iterrows():
+        for col_name, cell_value in row.items():
+            msg_parts.append(f"*{col_name}:* {cell_value}")
+        msg_parts.append("") 
+        
+    return "\n".join(msg_parts)
+
+
+# --- MODIFICATION 2: Update function to accept mod_time ---
+def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
     """This is the main dashboard UI that is visible to everyone."""
 
     if user_role in ["DSM", "ASM"] and isinstance(user_filter_value, str):
@@ -427,7 +460,7 @@ def main_dashboard_ui(df, user_role, user_filter_value):
     elif user_role == "DSM":
         options_for_this_user = ['Product Wise', 'Distributor Wise', 'ASM wise', 'SO Wise']
     elif user_role == "ASM":
-        options_for_this_user = ['Product Wise', 'Distributor Wise', 'SO Wise']
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'ASM wise' ,'SO Wise']
     elif user_role == "SO":
         options_for_this_user = ['Product Wise', 'Distributor Wise', 'SO Wise']
     else:
@@ -438,40 +471,127 @@ def main_dashboard_ui(df, user_role, user_filter_value):
         options_for_this_user,
         horizontal=True
     )
+
+    date_range_str = f"From {start_date_display.strftime('%d-%b-%Y')} to {end_date_display.strftime('%d-%b-%Y')}"
+
     if view_selection == 'Product Wise':
-        st.subheader("Performance by Product Category")
+        title = "Performance by Product Category"
+        st.subheader(title)
         group_cols = ['ProductCategory', 'upd_prod_ctg'] if 'upd_prod_ctg' in df_filtered.columns else ['ProductCategory']
         prod_ctg_performance = df_filtered.groupby(group_cols).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Name', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
-        prod_ctg_performance['Total_Value'] = prod_ctg_performance['Total_Value'].apply(format_indian_currency)
-        prod_ctg_performance['Total_Tonnes'] = prod_ctg_performance['Total_Tonnes'].map('{:.2f} T'.format)
-        st.dataframe(prod_ctg_performance, use_container_width=True, hide_index=True)
+        
+        prod_ctg_performance_display = prod_ctg_performance.copy()
+        prod_ctg_performance_display['Total_Value'] = prod_ctg_performance_display['Total_Value'].apply(format_indian_currency)
+        prod_ctg_performance_display['Total_Tonnes'] = prod_ctg_performance_display['Total_Tonnes'].map('{:.2f} T'.format)
+        
+        btn1, btn2, _ = st.columns([1.5, 2, 3.5])
+        with btn1:
+            st.download_button(label="📥 Download CSV", data=prod_ctg_performance.to_csv(index=False).encode('utf-8'), file_name='product_performance.csv', mime='text/csv', help="Downloads raw, unformatted data.")
+        with btn2:
+            with st.expander("📲 Share on WhatsApp"):
+                if len(prod_ctg_performance_display) > 25:
+                    st.warning("Warning: The table has many rows. The generated WhatsApp message will be long.")
+                # --- MODIFICATION 3: Pass mod_time to the function ---
+                whatsapp_msg = format_df_for_whatsapp(prod_ctg_performance_display, title, date_range_str, mod_time)
+                whatsapp_url = f"https://wa.me/?text={quote(whatsapp_msg)}"
+                st.markdown(f'<a href="{whatsapp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 10px 20px; text-align: center; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; border-radius: 12px;">Share on WhatsApp</button></a>', unsafe_allow_html=True)
+
+        st.dataframe(prod_ctg_performance_display, use_container_width=True, hide_index=True)
+
     elif view_selection == 'Distributor Wise':
-        st.subheader("Performance by Distributor")
-        db_performance = df_filtered.groupby(['BP Code', 'BP Name']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Unique_Products_Purchased_ct=('ProductCategory', 'nunique'), Unique_Products_Purchased=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
-        db_performance['Total_Value'] = db_performance['Total_Value'].apply(format_indian_currency)
-        db_performance['Total_Tonnes'] = db_performance['Total_Tonnes'].map('{:.2f} T'.format)
-        st.dataframe(db_performance, use_container_width=True, hide_index=True)
+        title = "Performance by Distributor"
+        st.subheader(title)
+        db_performance = df_filtered.groupby(['BP Code', 'BP Name']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Unique_Products_Purchased_ct=('ProductCategory', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        
+        db_performance_display = db_performance.copy()
+        db_performance_display['Total_Value'] = db_performance_display['Total_Value'].apply(format_indian_currency)
+        db_performance_display['Total_Tonnes'] = db_performance_display['Total_Tonnes'].map('{:.2f} T'.format)
+
+        btn1, btn2, _ = st.columns([1.5, 2, 3.5])
+        with btn1:
+            st.download_button(label="📥 Download CSV", data=db_performance.to_csv(index=False).encode('utf-8'), file_name='distributor_performance.csv', mime='text/csv', help="Downloads raw, unformatted data.")
+        with btn2:
+            with st.expander("📲 Share on WhatsApp"):
+                if len(db_performance_display) > 25:
+                    st.warning("Warning: The table has many rows. The generated WhatsApp message will be long.")
+                # --- MODIFICATION 3: Pass mod_time to the function ---
+                whatsapp_msg = format_df_for_whatsapp(db_performance_display, title, date_range_str, mod_time)
+                whatsapp_url = f"https://wa.me/?text={quote(whatsapp_msg)}"
+                st.markdown(f'<a href="{whatsapp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 10px 20px; text-align: center; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; border-radius: 12px;">Share on WhatsApp</button></a>', unsafe_allow_html=True)
+        
+        st.dataframe(db_performance_display, use_container_width=True, hide_index=True)
+
     elif view_selection == 'DSM wise':
-        st.subheader("Performance by DSM")
-        DSM_performance = df_filtered.groupby(['DSM']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'unique'),Unique_Products_ct=('ProductCategory', 'nunique'), Unique_Products=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
-        DSM_performance['Total_Value'] = DSM_performance['Total_Value'].apply(format_indian_currency)
-        DSM_performance['Total_Tonnes'] = DSM_performance['Total_Tonnes'].map('{:.2f} T'.format)
-        st.dataframe(DSM_performance, use_container_width=True, hide_index=True)
+        title = "Performance by DSM"
+        st.subheader(title)
+        DSM_performance = df_filtered.groupby(['DSM']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        
+        DSM_performance_display = DSM_performance.copy()
+        DSM_performance_display['Total_Value'] = DSM_performance_display['Total_Value'].apply(format_indian_currency)
+        DSM_performance_display['Total_Tonnes'] = DSM_performance_display['Total_Tonnes'].map('{:.2f} T'.format)
+
+        btn1, btn2, _ = st.columns([1.5, 2, 3.5])
+        with btn1:
+            st.download_button(label="📥 Download CSV", data=DSM_performance.to_csv(index=False).encode('utf-8'), file_name='dsm_performance.csv', mime='text/csv', help="Downloads raw, unformatted data.")
+        with btn2:
+            with st.expander("📲 Share on WhatsApp"):
+                if len(DSM_performance_display) > 25:
+                    st.warning("Warning: The table has many rows. The generated WhatsApp message will be long.")
+                # --- MODIFICATION 3: Pass mod_time to the function ---
+                whatsapp_msg = format_df_for_whatsapp(DSM_performance_display, title, date_range_str, mod_time)
+                whatsapp_url = f"https://wa.me/?text={quote(whatsapp_msg)}"
+                st.markdown(f'<a href="{whatsapp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 10px 20px; text-align: center; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; border-radius: 12px;">Share on WhatsApp</button></a>', unsafe_allow_html=True)
+                
+        st.dataframe(DSM_performance_display, use_container_width=True, hide_index=True)
+
     elif view_selection == 'ASM wise':
-        st.subheader("Performance by ASM")
-        ASM_performance = df_filtered.groupby(['ASM']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'unique'),Unique_Products_ct=('ProductCategory', 'nunique'), Unique_Products=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
-        ASM_performance['Total_Value'] = ASM_performance['Total_Value'].apply(format_indian_currency)
-        ASM_performance['Total_Tonnes'] = ASM_performance['Total_Tonnes'].map('{:.2f} T'.format)
-        st.dataframe(ASM_performance, use_container_width=True, hide_index=True)
+        title = "Performance by ASM"
+        st.subheader(title)
+        ASM_performance = df_filtered.groupby(['ASM']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+
+        ASM_performance_display = ASM_performance.copy()
+        ASM_performance_display['Total_Value'] = ASM_performance_display['Total_Value'].apply(format_indian_currency)
+        ASM_performance_display['Total_Tonnes'] = ASM_performance_display['Total_Tonnes'].map('{:.2f} T'.format)
+
+        btn1, btn2, _ = st.columns([1.5, 2, 3.5])
+        with btn1:
+            st.download_button(label="📥 Download CSV", data=ASM_performance.to_csv(index=False).encode('utf-8'), file_name='asm_performance.csv', mime='text/csv', help="Downloads raw, unformatted data.")
+        with btn2:
+            with st.expander("📲 Share on WhatsApp"):
+                if len(ASM_performance_display) > 25:
+                    st.warning("Warning: The table has many rows. The generated WhatsApp message will be long.")
+                # --- MODIFICATION 3: Pass mod_time to the function ---
+                whatsapp_msg = format_df_for_whatsapp(ASM_performance_display, title, date_range_str, mod_time)
+                whatsapp_url = f"https://wa.me/?text={quote(whatsapp_msg)}"
+                st.markdown(f'<a href="{whatsapp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 10px 20px; text-align: center; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; border-radius: 12px;">Share on WhatsApp</button></a>', unsafe_allow_html=True)
+
+        st.dataframe(ASM_performance_display, use_container_width=True, hide_index=True)
     
     elif view_selection == 'SO Wise':
-        st.subheader("Performance by SO")
-        SO_performance = df_filtered.groupby(['SO','ASM']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'unique'),Unique_Products_ct=('ProductCategory', 'nunique'), Unique_Products=('ProductCategory','unique')).reset_index().sort_values('Total_Tonnes', ascending=False)
-        SO_performance['Total_Value'] = SO_performance['Total_Value'].apply(format_indian_currency)
-        SO_performance['Total_Tonnes'] = SO_performance['Total_Tonnes'].map('{:.2f} T'.format)
-        st.dataframe(SO_performance, use_container_width=True, hide_index=True)
+        title = "Performance by SO"
+        st.subheader(title)
+        SO_performance = df_filtered.groupby(['SO','ASM']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Code', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        
+        SO_performance_display = SO_performance.copy()
+        SO_performance_display['Total_Value'] = SO_performance_display['Total_Value'].apply(format_indian_currency)
+        SO_performance_display['Total_Tonnes'] = SO_performance_display['Total_Tonnes'].map('{:.2f} T'.format)
 
-# --- 5. AUTHENTICATION & PAGE ROUTING (NO CHANGE) ---
+        btn1, btn2, _ = st.columns([1.5, 2, 3.5])
+        with btn1:
+            st.download_button(label="📥 Download CSV", data=SO_performance.to_csv(index=False).encode('utf-8'), file_name='so_performance.csv', mime='text/csv', help="Downloads raw, unformatted data.")
+        with btn2:
+            with st.expander("📲 Share on WhatsApp"):
+                if len(SO_performance_display) > 25:
+                    st.warning("Warning: The table has many rows. The generated WhatsApp message will be long.")
+                # --- MODIFICATION 3: Pass mod_time to the function ---
+                whatsapp_msg = format_df_for_whatsapp(SO_performance_display, title, date_range_str, mod_time)
+                whatsapp_url = f"https://wa.me/?text={quote(whatsapp_msg)}"
+                st.markdown(f'<a href="{whatsapp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 10px 20px; text-align: center; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; border-radius: 12px;">Share on WhatsApp</button></a>', unsafe_allow_html=True)
+
+        st.dataframe(SO_performance_display, use_container_width=True, hide_index=True)
+
+
+# --- 5. AUTHENTICATION & PAGE ROUTING ---
 
 if "ftp" not in st.secrets:
     st.error("FTP credentials are not configured in Streamlit secrets. The app cannot start.")
@@ -535,11 +655,13 @@ if st.session_state["authentication_status"]:
         if user_role == "SUPER_ADMIN":
             page = st.sidebar.radio("Navigation", ["Dashboard", "User Management"])
             if page == "Dashboard":
-                main_dashboard_ui(df_main, user_role, user_filter_value)
+                # --- MODIFICATION 4: Pass mod_time to the main UI function ---
+                main_dashboard_ui(df_main, user_role, user_filter_value, mod_time)
             elif page == "User Management":
                 user_management_ui(credentials, df_main)
         else:
-            main_dashboard_ui(df_main, user_role, user_filter_value)
+            # --- MODIFICATION 4: Pass mod_time to the main UI function ---
+            main_dashboard_ui(df_main, user_role, user_filter_value, mod_time)
     else:
         st.error("Could not load dashboard data.")
 
