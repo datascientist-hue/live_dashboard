@@ -611,7 +611,7 @@ authenticator = stauth.Authenticate(
     credentials['cookie']['expiry_days']
 )
 
-st.title("Sales Performance Dashboard 📊")
+st.title("VVD Sales Performance Dashboard 📊")
 authenticator.login()
 
 if st.session_state["authentication_status"]:
