@@ -14,7 +14,7 @@ import streamlit_authenticator as stauth
 from urllib.parse import quote # Required for WhatsApp sharing URL
 
 # --- 1. APP CONFIGURATION ---
-st.set_page_config(layout="wide", page_title="Sales Dashboard")
+st.set_page_config(layout="wide", page_title="VVD Sales Dashboard")
 
 
 # --- 2. FTP-BASED HELPER FUNCTIONS FOR USER MANAGEMENT ---
