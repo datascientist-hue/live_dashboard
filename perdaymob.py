@@ -501,7 +501,7 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
     elif view_selection == 'Distributor Wise':
         title = "Performance by Distributor"
         st.subheader(title)
-        db_performance = df_filtered.groupby(['BP Code', 'BP Name']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Unique_Products_Purchased_ct=('ProductCategory', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        db_performance = df_filtered.groupby(['BP Code', 'BP Name','ASM','SO']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Unique_Products_Purchased_ct=('ProductCategory', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
         
         db_performance_display = db_performance.copy()
         db_performance_display['Total_Value'] = db_performance_display['Total_Value'].apply(format_indian_currency)
