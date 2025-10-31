@@ -100,19 +100,20 @@ def initialize_credentials_if_needed():
             st.error("FATAL ERROR: Could not create the credentials file on the FTP server.")
             st.stop()
 
-# --- 3. FTP-BASED DATA LOADING FUNCTION ---
+# --- 3. FTP-BASED DATA LOADING FUNCTION (WITH MAPPING LOGIC) ---
 
+# --- FINAL FIX: REMOVED st.warning FROM THIS HELPER FUNCTION ---
 def download_and_read_parquet_with_retry(ftp_connection, path, max_retries=3, delay=5):
     """
-    Tries to download and read a parquet file with retries for race conditions.
+    Tries to download and read a parquet file. It is now fully cache-compatible.
     """
     for attempt in range(max_retries):
         try:
             in_memory_file = io.BytesIO()
             ftp_connection.retrbinary(f"RETR {path}", in_memory_file.write)
             
+            # If the file is empty, return None. The calling function will handle it.
             if in_memory_file.getbuffer().nbytes == 0:
-                st.warning(f"Warning: File at path '{path}' is empty (0 KB).")
                 return None
 
             in_memory_file.seek(0)
@@ -120,10 +121,10 @@ def download_and_read_parquet_with_retry(ftp_connection, path, max_retries=3, de
             return df
         
         except Exception as e:
-            st.toast(f"Attempt {attempt + 1}/{max_retries} to read '{os.path.basename(path)}' failed. Retrying in {delay}s...", icon="⏳")
             if attempt + 1 < max_retries:
                 time.sleep(delay)
             else:
+                # Raise the final exception to be caught by the main function
                 raise e
     return None
 
@@ -131,10 +132,12 @@ def download_and_read_parquet_with_retry(ftp_connection, path, max_retries=3, de
 @st.cache_data(ttl=120)
 def load_main_data_from_ftp():
     """
-    Loads primary data from FTP.
+    Loads data from FTP and returns a DataFrame and status messages.
+    This function is now fully cache-compatible.
     """
     modification_time_str = None
     status_msg = None
+
     try:
         ftp_creds = st.secrets["ftp"]
         
@@ -147,11 +150,33 @@ def load_main_data_from_ftp():
             except ftplib.all_errors:
                 pass
 
-            df = download_and_read_parquet_with_retry(ftp, ftp_creds['primary_path'])
+            primary_path = ftp_creds['primary_path']
+            category_path = ftp_creds['category_path']
 
-            if df is None:
-                return None, None, "Data Error: Could not load the main data file from FTP after multiple attempts. The file might be locked or empty.", None
-        
+            df_primary = download_and_read_parquet_with_retry(ftp, primary_path)
+            
+            # --- FINAL FIX: Handle empty file case here ---
+            if df_primary is None:
+                error_msg = f"Data Error: The main data file ('{os.path.basename(primary_path)}') is empty or could not be read."
+                return None, None, error_msg, None
+            
+            df_category_map = download_and_read_parquet_with_retry(ftp, category_path)
+
+        if df_category_map is not None and 'ProductCategory' in df_primary.columns and 'ProductCategory' in df_category_map.columns and 'Prod Ctg_Updated' in df_category_map.columns:
+            df = pd.merge(df_primary, df_category_map, on='ProductCategory', how='left')
+            df['ProductCategory'] = df['Prod Ctg_Updated'].fillna(df['ProductCategory'])
+            df.drop(columns=['Prod Ctg_Updated'], inplace=True)
+            status_msg = "Product categories successfully updated."
+        else:
+            df = df_primary
+            # A missing category file is a warning, not a fatal error.
+            if df_category_map is None:
+                status_msg = f"Warning: Category map file ('{os.path.basename(category_path)}') was empty or not found. Using original categories."
+            else:
+                status_msg = "Warning: Could not map updated product categories due to missing columns. Using original categories."
+
+
+        # --- DATA CLEANING AND PREPARATION ---
         if 'InvDate' not in df.columns:
             return None, None, "Data Error: The column 'InvDate' was not found.", None
         
@@ -164,7 +189,7 @@ def load_main_data_from_ftp():
                 df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce')
         
         key_cols = ['ASM', 'RGM', 'DSM', 'SO', 'ProductCategory', 'BP Name', 'CustomerClass', 
-                    'DocumentType', 'WhsCode', 'CustType', 'Brand', 'ProductGroup', 'upd_prod_ctg', 'JCPeriodNum']
+                    'DocumentType', 'WhsCode', 'CustType', 'Brand', 'ProductGroup', 'JCPeriodNum']
         for col in key_cols:
             if col in df.columns:
                 df[col] = df[col].fillna('Unknown')
@@ -172,13 +197,13 @@ def load_main_data_from_ftp():
         return df, modification_time_str, None, status_msg
  
     except ftplib.all_errors as e:
-        error_msg = f"FTP Error: Could not connect or find the data file. Please check the path and credentials. Details: {e}"
+        error_msg = f"FTP Error: Could not connect or find data files. Please check paths and credentials. Details: {e}"
         return None, None, error_msg, None
     except Exception as e:
         error_msg = f"Error after retries: Failed to load data from FTP. Details: {e}"
         return None, None, error_msg, None
 
-# --- 4. UI FUNCTIONS ---
+# --- 4. UI FUNCTIONS (NO CHANGES NEEDED BELOW) ---
 
 def user_management_ui(credentials, df):
     """UI for the Super Admin to manage users - with Add and Edit forms."""
@@ -319,26 +344,22 @@ def format_indian_currency(num):
         
     return "₹ " + val
 
-# --- MODIFICATION 1: Update function to accept mod_time ---
 def format_df_for_whatsapp(df, title, date_range_str, mod_time):
     """Formats an entire DataFrame into a WhatsApp-friendly string."""
     
-    # Format the timestamp for WhatsApp message
     formatted_time = ""
     if mod_time:
         try:
             utc_time = datetime.strptime(mod_time, '%Y%m%d%H%M%S').replace(tzinfo=ZoneInfo("UTC"))
             ist_time = utc_time.astimezone(ZoneInfo("Asia/Kolkata"))
             formatted_time = ist_time.strftime("%d %b %Y, %I:%M:%S %p IST")
-            # Create the refresh date string to be added to the message
             formatted_time = f"_Data Last Refreshed: {formatted_time}_"
         except Exception:
-            formatted_time = "" # Fallback in case of an error
+            formatted_time = ""
 
-    # Assemble the message parts
     msg_parts = [f"*{title}*", f"_{date_range_str}_"]
     if formatted_time:
-        msg_parts.append(formatted_time) # Add the refresh time string here
+        msg_parts.append(formatted_time)
     
     msg_parts.append("--------------------")
 
@@ -350,7 +371,6 @@ def format_df_for_whatsapp(df, title, date_range_str, mod_time):
     return "\n".join(msg_parts)
 
 
-# --- MODIFICATION 2: Update function to accept mod_time ---
 def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
     """This is the main dashboard UI that is visible to everyone."""
 
@@ -422,7 +442,7 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
     summary_total_net_Volume = df_filtered['PrimaryQtyInLtrs/Kgs'].sum() / 1000
     summary_total_net_value = df_filtered['PrimaryLineTotalBeforeTax'].sum()
     summary_unique_invoices = df_filtered['InvNum'].nunique()
-    summary_unique_dbs = df_filtered['BP Name'].nunique()
+    summary_unique_dbs = df_filtered['BP Code'].nunique()
     Unique_prod_ctg = df_filtered['ProductCategory'].nunique()
     col1, col2, col3 = st.columns(3)
     col1.metric(label="Unique Prod Ctg", value=f"{Unique_prod_ctg}")
@@ -477,8 +497,7 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
     if view_selection == 'Product Wise':
         title = "Performance by Product Category"
         st.subheader(title)
-        group_cols = ['ProductCategory', 'upd_prod_ctg'] if 'upd_prod_ctg' in df_filtered.columns else ['ProductCategory']
-        prod_ctg_performance = df_filtered.groupby(group_cols).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Name', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        prod_ctg_performance = df_filtered.groupby('ProductCategory').agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Name', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
         
         prod_ctg_performance_display = prod_ctg_performance.copy()
         prod_ctg_performance_display['Total_Value'] = prod_ctg_performance_display['Total_Value'].apply(format_indian_currency)
@@ -491,7 +510,6 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
             with st.expander("📲 Share on WhatsApp"):
                 if len(prod_ctg_performance_display) > 25:
                     st.warning("Warning: The table has many rows. The generated WhatsApp message will be long.")
-                # --- MODIFICATION 3: Pass mod_time to the function ---
                 whatsapp_msg = format_df_for_whatsapp(prod_ctg_performance_display, title, date_range_str, mod_time)
                 whatsapp_url = f"https://wa.me/?text={quote(whatsapp_msg)}"
                 st.markdown(f'<a href="{whatsapp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 10px 20px; text-align: center; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; border-radius: 12px;">Share on WhatsApp</button></a>', unsafe_allow_html=True)
@@ -514,7 +532,6 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
             with st.expander("📲 Share on WhatsApp"):
                 if len(db_performance_display) > 25:
                     st.warning("Warning: The table has many rows. The generated WhatsApp message will be long.")
-                # --- MODIFICATION 3: Pass mod_time to the function ---
                 whatsapp_msg = format_df_for_whatsapp(db_performance_display, title, date_range_str, mod_time)
                 whatsapp_url = f"https://wa.me/?text={quote(whatsapp_msg)}"
                 st.markdown(f'<a href="{whatsapp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 10px 20px; text-align: center; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; border-radius: 12px;">Share on WhatsApp</button></a>', unsafe_allow_html=True)
@@ -537,7 +554,6 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
             with st.expander("📲 Share on WhatsApp"):
                 if len(DSM_performance_display) > 25:
                     st.warning("Warning: The table has many rows. The generated WhatsApp message will be long.")
-                # --- MODIFICATION 3: Pass mod_time to the function ---
                 whatsapp_msg = format_df_for_whatsapp(DSM_performance_display, title, date_range_str, mod_time)
                 whatsapp_url = f"https://wa.me/?text={quote(whatsapp_msg)}"
                 st.markdown(f'<a href="{whatsapp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 10px 20px; text-align: center; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; border-radius: 12px;">Share on WhatsApp</button></a>', unsafe_allow_html=True)
@@ -560,7 +576,6 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
             with st.expander("📲 Share on WhatsApp"):
                 if len(ASM_performance_display) > 25:
                     st.warning("Warning: The table has many rows. The generated WhatsApp message will be long.")
-                # --- MODIFICATION 3: Pass mod_time to the function ---
                 whatsapp_msg = format_df_for_whatsapp(ASM_performance_display, title, date_range_str, mod_time)
                 whatsapp_url = f"https://wa.me/?text={quote(whatsapp_msg)}"
                 st.markdown(f'<a href="{whatsapp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 10px 20px; text-align: center; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; border-radius: 12px;">Share on WhatsApp</button></a>', unsafe_allow_html=True)
@@ -583,7 +598,6 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
             with st.expander("📲 Share on WhatsApp"):
                 if len(SO_performance_display) > 25:
                     st.warning("Warning: The table has many rows. The generated WhatsApp message will be long.")
-                # --- MODIFICATION 3: Pass mod_time to the function ---
                 whatsapp_msg = format_df_for_whatsapp(SO_performance_display, title, date_range_str, mod_time)
                 whatsapp_url = f"https://wa.me/?text={quote(whatsapp_msg)}"
                 st.markdown(f'<a href="{whatsapp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 10px 20px; text-align: center; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; border-radius: 12px;">Share on WhatsApp</button></a>', unsafe_allow_html=True)
@@ -628,16 +642,22 @@ if st.session_state["authentication_status"]:
     user_filter_value = user_details.get("filter_value")
     
     start_timer = time.time()
+    # Call the cached function and handle its returned values
     df_main, mod_time, error_message, status_message = load_main_data_from_ftp()
     end_timer = time.time()
     loading_time = end_timer - start_timer
     
+    # Display messages returned from the function
     if error_message:
         st.error(error_message)
         st.stop()
 
     if status_message:
-        st.toast(status_message, icon="⚡")
+        # Check if the message is a warning to display it differently
+        if "Warning:" in status_message:
+            st.warning(status_message)
+        else:
+            st.toast(status_message, icon="✅")
     
     if mod_time: 
         try:
@@ -655,14 +675,13 @@ if st.session_state["authentication_status"]:
         if user_role == "SUPER_ADMIN":
             page = st.sidebar.radio("Navigation", ["Dashboard", "User Management"])
             if page == "Dashboard":
-                # --- MODIFICATION 4: Pass mod_time to the main UI function ---
                 main_dashboard_ui(df_main, user_role, user_filter_value, mod_time)
             elif page == "User Management":
                 user_management_ui(credentials, df_main)
         else:
-            # --- MODIFICATION 4: Pass mod_time to the main UI function ---
             main_dashboard_ui(df_main, user_role, user_filter_value, mod_time)
     else:
+        # An error message would have already been shown, but this is a final fallback.
         st.error("Could not load dashboard data.")
 
 elif st.session_state["authentication_status"] is False:
