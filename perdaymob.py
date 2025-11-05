@@ -497,7 +497,13 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
     if view_selection == 'Product Wise':
         title = "Performance by Product Category"
         st.subheader(title)
-        prod_ctg_performance = df_filtered.groupby('ProductCategory').agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Distributors_Billed=('BP Name', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        # UPDATED: Added SKU aggregation
+        prod_ctg_performance = df_filtered.groupby('ProductCategory').agg(
+            Total_Value=('PrimaryLineTotalBeforeTax', 'sum'),
+            Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000),
+            Distributors_Billed=('BP Name', 'nunique'),
+            SKU=('ProductGroup', lambda x: ', '.join(x.unique()))
+        ).reset_index().sort_values('Total_Tonnes', ascending=False)
         
         prod_ctg_performance_display = prod_ctg_performance.copy()
         prod_ctg_performance_display['Total_Value'] = prod_ctg_performance_display['Total_Value'].apply(format_indian_currency)
@@ -519,7 +525,13 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
     elif view_selection == 'Distributor Wise':
         title = "Performance by Distributor"
         st.subheader(title)
-        db_performance = df_filtered.groupby(['BP Code', 'BP Name','ASM','SO']).agg(Total_Value=('PrimaryLineTotalBeforeTax', 'sum'), Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000), Unique_Products_Purchased_ct=('ProductCategory', 'nunique')).reset_index().sort_values('Total_Tonnes', ascending=False)
+        # UPDATED: Added SKU aggregation
+        db_performance = df_filtered.groupby(['BP Code', 'BP Name','ASM','SO']).agg(
+            Total_Value=('PrimaryLineTotalBeforeTax', 'sum'),
+            Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000),
+            Products_Category=('ProductCategory', 'nunique'),
+            SKU=('ProductGroup', lambda x: ', '.join(x.unique()))
+        ).reset_index().sort_values('Total_Tonnes', ascending=False)
         
         db_performance_display = db_performance.copy()
         db_performance_display['Total_Value'] = db_performance_display['Total_Value'].apply(format_indian_currency)
