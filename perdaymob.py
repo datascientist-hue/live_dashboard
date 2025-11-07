@@ -646,7 +646,7 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
             trend_df = df_filtered[df_filtered['ProductCategory'].isin(selected_categories)]
             
             pivot_df = trend_df.pivot_table(
-                index='BP Name',
+                index=['BP Name','BP Code'],
                 columns='JCPeriodNum',
                 values='PrimaryQtyInLtrs/Kgs',
                 aggfunc='sum',
