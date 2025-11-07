@@ -471,20 +471,20 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
 
     st.header("Detailed Performance View")
     
-    all_options = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'SO Wise']
+    all_options = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'SO Wise', 'Trend Wise']
     
     if user_role in ["SUPER_ADMIN", "ADMIN"]:
         options_for_this_user = all_options
     elif user_role == "RGM":
-        options_for_this_user = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'SO Wise']
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'SO Wise', 'Trend Wise']
     elif user_role == "DSM":
-        options_for_this_user = ['Product Wise', 'Distributor Wise', 'ASM wise', 'SO Wise']
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'ASM wise', 'SO Wise', 'Trend Wise']
     elif user_role == "ASM":
-        options_for_this_user = ['Product Wise', 'Distributor Wise', 'ASM wise' ,'SO Wise']
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'ASM wise' ,'SO Wise', 'Trend Wise']
     elif user_role == "SO":
-        options_for_this_user = ['Product Wise', 'Distributor Wise', 'SO Wise']
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'SO Wise', 'Trend Wise']
     else:
-        options_for_this_user = ['Product Wise', 'Distributor Wise']
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'Trend Wise']
 
     view_selection = st.radio(
         "Choose a view for the table below:",
@@ -615,6 +615,72 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
                 st.markdown(f'<a href="{whatsapp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 10px 20px; text-align: center; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; border-radius: 12px;">Share on WhatsApp</button></a>', unsafe_allow_html=True)
 
         st.dataframe(SO_performance_display, use_container_width=True, hide_index=True)
+
+    elif view_selection == 'Trend Wise':
+        title = "Trend Wise Performance by Distributor"
+        st.subheader(title)
+        
+        if 'JCPeriodNum' not in df_filtered.columns or 'ProductCategory' not in df_filtered.columns:
+            st.error("Required columns ('JCPeriodNum', 'ProductCategory') are not available for this view.")
+            return # Stop execution for this view if columns are missing
+        
+        all_categories = sorted(df_filtered['ProductCategory'].unique())
+        
+        # --- NEW IMPLEMENTATION: "Select All" Checkbox ---
+        select_all = st.checkbox("Select All Product Categories", value=True)
+        
+        selected_categories = []
+        if select_all:
+            selected_categories = all_categories
+            st.info("Showing trends for all product categories. To select specific categories, uncheck the box above.")
+        else:
+            selected_categories = st.multiselect(
+                "Filter by Product Category", 
+                options=all_categories
+            )
+        # --- END OF NEW IMPLEMENTATION ---
+        
+        if not selected_categories:
+            st.warning("Please select at least one product category to view the trend.")
+        else:
+            trend_df = df_filtered[df_filtered['ProductCategory'].isin(selected_categories)]
+            
+            pivot_df = trend_df.pivot_table(
+                index='BP Name',
+                columns='JCPeriodNum',
+                values='PrimaryQtyInLtrs/Kgs',
+                aggfunc='sum',
+                fill_value=0
+            ) / 1000
+            
+            jc_cols = sorted([col for col in pivot_df.columns])
+            pivot_df = pivot_df[jc_cols]
+            
+            pivot_df['Grand Total'] = pivot_df.sum(axis=1)
+            pivot_df = pivot_df.sort_values('Grand Total', ascending=False)
+            
+            pivot_df_display = pivot_df.copy()
+            for col in pivot_df_display.columns:
+                pivot_df_display[col] = pivot_df_display[col].map('{:.2f} T'.format)
+
+            pivot_df.reset_index(inplace=True)
+            pivot_df_display.reset_index(inplace=True)
+            
+            btn1, btn2, _ = st.columns([1.5, 2, 3.5])
+            with btn1:
+                st.download_button(label="📥 Download CSV", data=pivot_df.to_csv(index=False).encode('utf-8'), file_name='trend_performance.csv', mime='text/csv', help="Downloads raw, unformatted data.")
+            with btn2:
+                with st.expander("📲 Share on WhatsApp"):
+                    if len(pivot_df_display) > 25:
+                        st.warning("Warning: The table has many rows. The generated WhatsApp message will be long.")
+                    
+                    trend_date_range = f"JC Periods: {', '.join(map(str, jc_cols))}"
+                    
+                    whatsapp_msg = format_df_for_whatsapp(pivot_df_display, title, trend_date_range, mod_time)
+                    whatsapp_url = f"https://wa.me/?text={quote(whatsapp_msg)}"
+                    st.markdown(f'<a href="{whatsapp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 10px 20px; text-align: center; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; border-radius: 12px;">Share on WhatsApp</button></a>', unsafe_allow_html=True)
+            
+            st.dataframe(pivot_df_display, use_container_width=True, hide_index=True)
 
 
 # --- 5. AUTHENTICATION & PAGE ROUTING ---
