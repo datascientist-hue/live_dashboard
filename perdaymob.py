@@ -471,20 +471,21 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
 
     st.header("Detailed Performance View")
     
-    all_options = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'SO Wise', 'Trend Wise']
+    # MODIFICATION: Added 'Whole Data' to the list of options
+    all_options = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'SO Wise', 'Trend Wise', 'Whole Data']
     
     if user_role in ["SUPER_ADMIN", "ADMIN"]:
         options_for_this_user = all_options
     elif user_role == "RGM":
-        options_for_this_user = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'SO Wise', 'Trend Wise']
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'DSM wise', 'ASM wise', 'SO Wise', 'Trend Wise', 'Whole Data']
     elif user_role == "DSM":
-        options_for_this_user = ['Product Wise', 'Distributor Wise', 'ASM wise', 'SO Wise', 'Trend Wise']
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'ASM wise', 'SO Wise', 'Trend Wise', 'Whole Data']
     elif user_role == "ASM":
-        options_for_this_user = ['Product Wise', 'Distributor Wise', 'ASM wise' ,'SO Wise', 'Trend Wise']
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'ASM wise' ,'SO Wise', 'Trend Wise', 'Whole Data']
     elif user_role == "SO":
-        options_for_this_user = ['Product Wise', 'Distributor Wise', 'SO Wise', 'Trend Wise']
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'SO Wise', 'Trend Wise', 'Whole Data']
     else:
-        options_for_this_user = ['Product Wise', 'Distributor Wise', 'Trend Wise']
+        options_for_this_user = ['Product Wise', 'Distributor Wise', 'Trend Wise', 'Whole Data']
 
     view_selection = st.radio(
         "Choose a view for the table below:",
@@ -526,8 +527,9 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
         title = "Performance by Distributor"
         st.subheader(title)
         # UPDATED: Added SKU aggregation
-        db_performance = df_filtered.groupby(['BP Code', 'BP Name','ASM','SO']).agg(
+        db_performance = df_filtered.groupby(['BP Code','BP Name','WhsCode','ASM','SO']).agg(
             Total_Value=('PrimaryLineTotalBeforeTax', 'sum'),
+            Total_cases=('PrimaryQtyinCases/Bags', 'sum'),
             Total_Tonnes=('PrimaryQtyInLtrs/Kgs', lambda x: x.sum() / 1000),
             Products_Category=('ProductCategory', 'nunique'),
             SKU=('ProductGroup', lambda x: ', '.join(x.unique()))
@@ -681,6 +683,24 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
                     st.markdown(f'<a href="{whatsapp_url}" target="_blank" style="text-decoration: none;"><button style="background-color: #25D366; color: white; border: none; padding: 10px 20px; text-align: center; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; border-radius: 12px;">Share on WhatsApp</button></a>', unsafe_allow_html=True)
             
             st.dataframe(pivot_df_display, use_container_width=True, hide_index=True)
+
+    # --- NEWLY ADDED SECTION FOR 'Whole Data' ---
+    elif view_selection == 'Whole Data':
+        title = "Complete Data View"
+        st.subheader(title)
+        st.info("This table shows all the raw data based on your current filter selections. You can download it for further analysis.")
+        
+        # Provide a download button for the filtered data
+        st.download_button(
+            label="📥 Download CSV",
+            data=df_filtered.to_csv(index=False).encode('utf-8'),
+            file_name='complete_filtered_data.csv',
+            mime='text/csv',
+            help="Downloads all data corresponding to the current filters."
+        )
+
+        # Display the entire filtered DataFrame
+        st.dataframe(df_filtered, use_container_width=True, hide_index=True)
 
 
 # --- 5. AUTHENTICATION & PAGE ROUTING ---
