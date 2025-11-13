@@ -396,7 +396,7 @@ def main_dashboard_ui(df, user_role, user_filter_value, mod_time):
     if user_role in ["SUPER_ADMIN", "ADMIN", "RGM","DSM"]:
         if selected_dsm := st.sidebar.multiselect("Filter by DSM", sorted(df_hierarchical_filtered['DSM'].unique())): 
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['DSM'].isin(selected_dsm)]
-    if user_role in ["SUPER_ADMIN", "ADMIN", "RGM", "DSM"]:
+    if user_role in ["SUPER_ADMIN", "ADMIN", "RGM", "DSM", "ASM"]:
         if selected_asm := st.sidebar.multiselect("Filter by ASM", sorted(df_hierarchical_filtered['ASM'].unique())): 
             df_hierarchical_filtered = df_hierarchical_filtered[df_hierarchical_filtered['ASM'].isin(selected_asm)]
     if user_role in ["SUPER_ADMIN", "ADMIN", "RGM", "DSM", "ASM"]:
