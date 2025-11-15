@@ -17,6 +17,32 @@ from urllib.parse import quote # Required for WhatsApp sharing URL
 st.set_page_config(layout="wide", page_title="VVD Sales Dashboard")
 
 
+# --- NEW: FUNCTION TO LOAD LOGO FROM FTP ---
+@st.cache_data(ttl=3600)  # Cache the image for 1 hour to prevent re-downloading
+def load_image_from_ftp():
+    """Loads the logo image from the path specified in secrets.toml."""
+    try:
+        creds = st.secrets["ftp"]
+        # Check if the image path is configured in secrets
+        if "img_path" not in creds or not creds["img_path"]:
+            return None
+
+        ftp = FTP(creds['host'])
+        ftp.login(user=creds['user'], passwd=creds['password'])
+        
+        # Download the image into an in-memory bytes buffer
+        in_memory_image = io.BytesIO()
+        ftp.retrbinary(f"RETR {creds['img_path']}", in_memory_image.write)
+        in_memory_image.seek(0)
+        ftp.quit()
+        
+        return in_memory_image.getvalue()
+
+    except Exception as e:
+        # If loading fails, we'll show a warning but won't crash the app
+        st.sidebar.warning(f"Could not load logo from FTP: {e}")
+        return None
+
 # --- 2. FTP-BASED HELPER FUNCTIONS FOR USER MANAGEMENT ---
 
 def load_credentials_from_ftp():
@@ -203,7 +229,7 @@ def load_main_data_from_ftp():
         error_msg = f"Error after retries: Failed to load data from FTP. Details: {e}"
         return None, None, error_msg, None
 
-# --- 4. UI FUNCTIONS (NO CHANGES NEEDED BELOW) ---
+# --- 4. UI FUNCTIONS ---
 
 def user_management_ui(credentials, df):
     """UI for the Super Admin to manage users - with Add and Edit forms."""
@@ -727,12 +753,18 @@ st.title("VVD Sales Performance Dashboard 📊")
 authenticator.login()
 
 if st.session_state["authentication_status"]:
+    # --- MODIFIED SECTION TO DISPLAY LOGO ---
+    logo_image = load_image_from_ftp()
     with st.sidebar:
+        if logo_image:
+            st.image(logo_image, use_container_width='auto') # Display logo at the top
+
         st.success(f'Welcome *{st.session_state["name"]}*')
         if st.sidebar.button("Refresh Data ❄️"):
             st.cache_data.clear()
             st.rerun()
         authenticator.logout('Logout', 'main')
+    # --- END OF MODIFIED SECTION ---
 
     username = st.session_state["username"]
     user_details = credentials['credentials']['usernames'].get(username, {})
